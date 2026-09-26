@@ -6,7 +6,7 @@
 - O importador dry-run grava somente `migration_batches`, `migration_rows`, `migration_errors` e `reconciliation_reports`.
 - Nenhuma escola, cliente, aluno, acordo, parcela, pagamento ou cobranca canonica e criada nesse modo.
 - Senhas, API keys e tokens sao substituidos por `[REDACTED]` antes de persistir o payload.
-- O lote completo `VOA.xlsx` (419.700 linhas em 39 abas) esta em staging e ja passou por validacao. A revisao de 2026-09-25 20:01 do arquivo tem **60 abas e 546.346 linhas de dados**; o staging dela foi tentado em 2026-09-25 21:33 e **abortou por falta de disco no Supabase** (o projeto entrou em somente-leitura e a tentativa foi desfeita por inteiro - ver "Incidente de disco no staging"). O caminho escolhido pelo operador foi estagiar no Postgres local mantendo o canonico no Supabase (ver "Staging local + canonico no Supabase"). Ate esse staging rodar, o `db:field-dictionary-check` continua mostrando os numeros do lote antigo, inclusive 19 `empty_sheet` (informativo, nao derruba o gate).
+- O lote completo `VOA.xlsx` da revisao anterior (419.700 linhas em 39 abas) esta em staging no Supabase e ja passou por validacao. A revisao de 2026-09-25 20:01 (`VOA.xlsx`, **60 abas e 546.346 linhas**) **esta estagiada e validada no Postgres local** (lote `4609c071-03c3-47fb-beff-5c3bcad6367e`), com o dicionario conferido (`0` divergencia de coluna e `1` aba vazia) e o dry-run da carga canonica fechando: 104.685 linhas ja existentes no canonico + **24 novas** em `contacts`. O commit canonico segue pendente porque o Supabase entrou em somente-leitura por cota de disco - ver "Incidente de disco no staging" e "Staging local + canonico no Supabase".
 - A validacao registra achados por aba/campo, marca linhas com erro e atualiza `reconciliation_reports`.
 - O relatorio consolidado da ultima validacao esta em `docs/STAGING_VALIDATION_REPORT.md`.
 - O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 30 `map`, 76 `ignore`, 713 `defer` e 37 `review`.
@@ -399,6 +399,42 @@ Efeito colateral aceito: o `snapshot_canonical_counts` do validador passa a olha
 do banco de staging (vazias no local). Ele existe para provar que a validacao nao toca no canonico, e a
 prova continua valida - quem grava o canonico e o `load_canonical_batch.py`, com o `connect()` do
 canonico.
+
+### Resultado do staging local da revisao de 20:01 (2026-09-26)
+
+Rodado exatamente na ordem da secao acima, com `STAGING_DATABASE_URL` no `.env`:
+
+| Etapa | Resultado |
+|---|---|
+| Staging | lote `4609c071-03c3-47fb-beff-5c3bcad6367e`, `VOA.xlsx`, **546.346 linhas em 60 abas**, `localhost:5434/voa_staging`, 21 erros de carga (redacao/duplicidade de ID legado), ~3 min |
+| Validacao | `docs/STAGING_VALIDATION_REPORT.md` regerado: 546.346 linhas em 57 abas com dados, 20 bloqueios, 30 erros e 22 avisos distintos, 76.936 linhas marcadas, 72 erros persistidos, 57 relatorios de reconciliacao; nenhum registro canonico criado |
+| Dicionario | `--from-staging --gate approved`: 60 abas, 856 colunas, `staging_mismatches = 0`, `staging_empty_sheets = 1` (so `TBL_EMAILLISTACONTATO`, que tambem e lida pela app legada e nao tem aba real), 0 problemas estruturais e as mesmas 37 pendencias `review` (exit 2) |
+| Dry-run da carga | `--staging-url ...` (leitura local, escrita canonica no Supabase): 121.991 linhas avaliadas, 104.709 validas, **104.685 reutilizadas** por `legacy_id` e **apenas 24 novas**, 17.282 descartadas, 20 achados, `asaas_charges` bloqueada (`required_columns_uncovered`) e exit 4 |
+
+Leitura do dry-run, tabela a tabela (`novas` x `reutilizadas`):
+
+| Tabela | Legadas | Carregadas | Novas | Reutilizadas | Descartadas |
+|---|---:|---:|---:|---:|---:|
+| `schools` | 75 | 75 | 0 | 75 | 0 |
+| `customers` | 26.268 | 26.264 | 0 | 26.264 | 4 |
+| `contacts` | 54.782 | 46.829 | **24** | 46.805 | 7.953 |
+| `students` | 6.652 | 6.641 | 0 | 6.641 | 11 |
+| `agreements` | 1.572 | 1.505 | 0 | 1.505 | 67 |
+| `asaas_customers` | 1.572 | 1.120 | 0 | 1.120 | 452 |
+| `installments` | 15.535 | 15.259 | 0 | 15.259 | 276 |
+| `payments` | 15.535 | 7.016 | 0 | 7.016 | 8.519 |
+
+- a reexportacao do workbook **nao mudou nenhum valor canonico**: os totais continuam fechando
+  (`agreements.total_amount` 7.161.716,00 = `installments.original_amount` 7.161.716,00;
+  `payments.retained_amount` 924.781,71; `payments.amount` 3.594.788,37). O unico delta sao os 24
+  contatos novos de `TBL_CLIENTEENDTEL` (46.829 validos contra 46.805 antes);
+- os descartes continuam explicados pelos mesmos achados de sempre
+  (`LOAD_REFERENCE_UNRESOLVED` em `CLIENTEENDTEL_CLIENTE_ID`: 7.648; `LOAD_REQUIRED_FIELD_EMPTY` em
+  `Pagamento_Listagem.Valor_Pago`: 8.243; `LOAD_AGGREGATE_MISSING` nos 63 acordos sem parcela).
+
+Para fechar a fase 7 resta o `--commit` no Supabase, que continua **somente-leitura** por cota de
+disco (ver "Incidente de disco no staging"). Se o operador preferir, o mesmo `--commit` roda contra o
+banco local (as duas conexoes no container) para ensaiar a carga inteira sem tocar o Supabase.
 
 ## Pendencias de entrada ainda abertas
 

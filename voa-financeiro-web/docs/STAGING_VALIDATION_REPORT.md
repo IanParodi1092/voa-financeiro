@@ -1,11 +1,11 @@
 # Relatorio de validacao do staging
 
-- Gerado em: `2026-09-25T15:08:56.551593+00:00`
-- Lote: `5cd769e4-eaaa-49bd-b5ba-7e03947e5e09`
+- Gerado em: `2026-09-26T03:00:02.380517+00:00`
+- Lote: `4609c071-03c3-47fb-beff-5c3bcad6367e`
 - Fonte: `VOA.xlsx`
 - Status do lote apos a validacao: `staging`
-- Linhas verificadas: 419700 em 39 abas
-- Resultado: 2 bloqueios, 30 erros, 11 avisos
+- Linhas verificadas: 546346 em 57 abas
+- Resultado: 20 bloqueios, 30 erros, 22 avisos
 - Nenhuma escola, cliente, aluno, acordo, parcela, pagamento ou cobranca canonica foi criada.
 
 ## Totais por aba
@@ -18,6 +18,10 @@
 | TBL_AUXSEPARAR | 1 | 1 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_AUXSUBIR | 9553 | 9553 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_BANCO | 1 | 1 | 0 | 0 | 0 | 0 | 0 | - |
+| TBL_CATEGORIAFILHODRE | 25 | 25 | 25 | 0 | 25 | 0 | 0 | - |
+| TBL_CATEGORIAPAGAMENTO | 315 | 315 | 315 | 0 | 315 | 0 | 0 | - |
+| TBL_CATEGORIAPAIDRE | 8 | 8 | 8 | 0 | 8 | 0 | 0 | - |
+| TBL_CATEGORIAPRODUTO_FINANCEIRO | 2 | 2 | 2 | 0 | 2 | 0 | 0 | - |
 | TBL_CENTRODECUSTO | 108 | 108 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_CLIENTE | 24696 | 24696 | 0 | 8 | 0 | 0 | 22565 | - |
 | TBL_CLIENTECONTATO | 1511 | 1511 | 33 | 0 | 0 | 33 | 0 | - |
@@ -29,18 +33,31 @@
 | TBL_DESPESA | 2853 | 2853 | 8 | 0 | 0 | 8 | 0 | - |
 | TBL_DIVIDA | 6868 | 6868 | 51 | 0 | 0 | 51 | 0 | 93309.95 (Divida.ValorOriginalTotal) |
 | TBL_DIVIDA_LISTAGEM | 42886 | 42886 | 34 | 245 | 245 | 34 | 0 | 26655785.94087 (Divida_Listagem.Valor) |
+| TBL_DREAUX | 366 | 366 | 366 | 0 | 366 | 0 | 0 | - |
+| TBL_DREBASE | 80 | 80 | 80 | 0 | 80 | 0 | 0 | - |
+| TBL_DREVALOR | 3095 | 3095 | 3095 | 0 | 3095 | 0 | 15346 | - |
 | TBL_EMAILCOBRANCA | 148 | 148 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_EMPRESA | 15 | 15 | 0 | 0 | 0 | 0 | 14 | - |
 | TBL_ENDTEL | 47562 | 47562 | 2776 | 0 | 0 | 2776 | 0 | - |
 | TBL_ESCOLA | 75 | 75 | 1 | 0 | 0 | 1 | 6 | - |
+| TBL_EXTRATOOLD_FINANCEIRO | 64451 | 64451 | 64451 | 0 | 64451 | 0 | 80386 | - |
+| TBL_EXTRATO_FINANCEIRO | 39944 | 39944 | 39944 | 0 | 39944 | 0 | 41340 | - |
+| TBL_FABRICANTE | 4 | 4 | 4 | 0 | 4 | 0 | 0 | - |
 | TBL_FERIADO | 9 | 9 | 0 | 0 | 0 | 0 | 0 | - |
+| TBL_FLUXOCAIXA | 13016 | 13016 | 13016 | 0 | 13016 | 0 | 2082 | - |
+| TBL_FORNECEDOR | 3 | 3 | 3 | 0 | 3 | 0 | 0 | - |
 | TBL_GUIACUSTAS | 20 | 20 | 0 | 0 | 0 | 0 | 0 | - |
+| TBL_HISTORICO | 156 | 156 | 156 | 0 | 156 | 0 | 0 | - |
+| TBL_HORAATUALIZADO | 1 | 1 | 1 | 0 | 1 | 0 | 0 | - |
 | TBL_INPC | 194 | 194 | 0 | 0 | 0 | 0 | 0 | - |
+| TBL_ITEMDRE | 15 | 15 | 15 | 0 | 15 | 0 | 0 | - |
+| TBL_LOGIN | 78 | 78 | 78 | 0 | 78 | 0 | 0 | - |
 | TBL_MODELODOC | 1 | 1 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_MODELODOCHISTORICO | 1296 | 1296 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_PAGAMENTO | 1572 | 1572 | 117 | 0 | 0 | 117 | 0 | - |
 | TBL_PAGAMENTO_FINANCEIRO | 23961 | 23961 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_PAGAMENTO_LISTAGEM | 15535 | 15535 | 9 | 236 | 236 | 9 | 0 | 7323552.85 (Pagamento_Listagem.Valor_Parcela) |
+| TBL_PEDIDO | 5080 | 5080 | 5080 | 0 | 5080 | 0 | 0 | - |
 | TBL_PROCESSO | 909 | 909 | 4 | 0 | 0 | 4 | 0 | - |
 | TBL_PROCESSODETALHE | 3801 | 3801 | 224 | 0 | 0 | 224 | 0 | - |
 | TBL_PROCESSODIVIDA | 1198 | 1198 | 172 | 0 | 0 | 172 | 0 | - |
@@ -49,6 +66,7 @@
 | TBL_PUBLICACOES | 1274 | 1274 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_RECALCULO | 5164 | 5164 | 0 | 0 | 0 | 0 | 0 | - |
 | TBL_ROTA | 327 | 327 | 6 | 0 | 0 | 6 | 0 | - |
+| TBL_SUBITEMEXTRATO | 7 | 7 | 7 | 0 | 7 | 0 | 0 | - |
 | TBL_TAXAESCOLA | 1182 | 1182 | 0 | 0 | 0 | 0 | 0 | 336.00 (TAXAESCOLA_VALOR) |
 | TBL_USER | 28 | 28 | 0 | 0 | 0 | 0 | 23 | - |
 
@@ -62,6 +80,10 @@
 | warning | DUPLICATE_DOCUMENT | TBL_ALUNO | Aluno.CPFResponsavel | 424 | {"digits": 11, "prefix": "0991", "count": 2} |
 | error | FK_MISSING_REFERENCE | TBL_ALUNO | Aluno.Escola.ID | 2 | {"row": 557, "legacy_id": "6861"} |
 | error | REQUIRED_FIELD_EMPTY | TBL_ALUNO | Aluno.Nome | 10 | {"row": 24, "legacy_id": "7399"} |
+| blocking | MISSING_LEGACY_ID | TBL_CATEGORIAFILHODRE | ID | 25 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_CATEGORIAPAGAMENTO | ID | 315 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_CATEGORIAPAIDRE | ID | 8 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_CATEGORIAPRODUTO_FINANCEIRO | ID | 2 | {"row": 2, "legacy_id": null} |
 | warning | DOCUMENT_MISSING | TBL_CLIENTE | CLIENTE_CNPJ | 22558 | {"row": 2140, "legacy_id": "11723"} |
 | warning | DUPLICATE_DOCUMENT | TBL_CLIENTE | CLIENTE_CNPJ | 7 | {"digits": 14, "prefix": "5216", "count": 2} |
 | error | FK_MISSING_REFERENCE | TBL_CLIENTECONTATO | CLIENTECONTATO_CLIENTE_ID | 33 | {"row": 2, "legacy_id": "539", "value": "11739", "target": "TBL_CLIENTE"} |
@@ -78,10 +100,33 @@
 | blocking | DUPLICATE_COMPOSITE_KEY | TBL_DIVIDA_LISTAGEM | Divida_Listagem.Divida.ID + Divida_Listagem.Vencimento + Divida_Listagem.Valor | 245 | {"row": 19, "legacy_id": "22026", "key": ["3419", "2021-10-10T20:00:00", "408"]} |
 | error | FK_MISSING_REFERENCE | TBL_DIVIDA_LISTAGEM | Divida_Listagem.Divida.ID | 23 | {"row": 5866, "legacy_id": "3650", "value": "617", "target": "TBL_DIVIDA"} |
 | error | REQUIRED_FIELD_EMPTY | TBL_DIVIDA_LISTAGEM | Divida_Listagem.Valor | 11 | {"row": 7663, "legacy_id": "9898"} |
+| blocking | MISSING_LEGACY_ID | TBL_DREAUX | ID | 366 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_DREBASE | ID | 80 | {"row": 2, "legacy_id": null} |
+| warning | AMOUNT_NEGATIVE | TBL_DREVALOR | DREVALOR_BUDGET | 2077 | {"row": 212, "legacy_id": null, "value": "-42370,7634"} |
+| warning | AMOUNT_UNPARSEABLE | TBL_DREVALOR | DREVALOR_CATEGORIA | 3095 | {"row": 2, "legacy_id": null, "value": "(-) SG&A"} |
+| warning | AMOUNT_UNPARSEABLE | TBL_DREVALOR | DREVALOR_GRUPO | 2472 | {"row": 2, "legacy_id": null, "value": "OUTRAS DESPESAS ADM"} |
+| warning | AMOUNT_UNPARSEABLE | TBL_DREVALOR | DREVALOR_ITEM | 2939 | {"row": 2, "legacy_id": null, "value": "Rescisões pessoas"} |
+| warning | AMOUNT_UNPARSEABLE | TBL_DREVALOR | DREVALOR_MODELO | 3095 | {"row": 2, "legacy_id": null, "value": "DRE COLEGIO 2024"} |
+| warning | AMOUNT_UNPARSEABLE | TBL_DREVALOR | DREVALOR_SUBGRUPO | 1668 | {"row": 72, "legacy_id": null, "value": "Prédio"} |
+| blocking | MISSING_LEGACY_ID | TBL_DREVALOR | ID | 3095 | {"row": 2, "legacy_id": null} |
 | warning | DOCUMENT_MISSING | TBL_EMPRESA | EMPRESA_CNPJ | 14 | {"row": 2, "legacy_id": "1"} |
 | error | FK_MISSING_REFERENCE | TBL_ENDTEL | ENDTEL_ALUNO_ID | 2776 | {"row": 2, "legacy_id": "2630", "value": "625", "target": "TBL_ALUNO"} |
 | error | DOCUMENT_INVALID | TBL_ESCOLA | Escola.CNPJ | 1 | {"row": 74, "legacy_id": "84", "value": "123123123123", "digits": 12, "kind": "cnpj"} |
 | warning | DOCUMENT_MISSING | TBL_ESCOLA | Escola.CNPJ | 6 | {"row": 16, "legacy_id": "22"} |
+| warning | AMOUNT_NEGATIVE | TBL_EXTRATOOLD_FINANCEIRO | EXTRATOOLD_VALOR | 40184 | {"row": 1187, "legacy_id": null, "value": "-211"} |
+| warning | AMOUNT_NEGATIVE | TBL_EXTRATOOLD_FINANCEIRO | EXTRATOOLD_VALORPAGO | 40202 | {"row": 1187, "legacy_id": null, "value": "-211"} |
+| blocking | MISSING_LEGACY_ID | TBL_EXTRATOOLD_FINANCEIRO | ID | 64451 | {"row": 2, "legacy_id": null} |
+| warning | AMOUNT_NEGATIVE | TBL_EXTRATO_FINANCEIRO | EXTRATO_VALOR | 21171 | {"row": 2706, "legacy_id": null, "value": "-1280"} |
+| warning | AMOUNT_NEGATIVE | TBL_EXTRATO_FINANCEIRO | EXTRATO_VALORPAGO | 20169 | {"row": 2706, "legacy_id": null, "value": "-1280"} |
+| blocking | MISSING_LEGACY_ID | TBL_EXTRATO_FINANCEIRO | ID | 39944 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_FABRICANTE | ID | 4 | {"row": 2, "legacy_id": null} |
+| warning | AMOUNT_NEGATIVE | TBL_FLUXOCAIXA | FLUXOCAIXA_VALOR | 2082 | {"row": 8144, "legacy_id": null, "value": "-9707,97"} |
+| blocking | MISSING_LEGACY_ID | TBL_FLUXOCAIXA | ID | 13016 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_FORNECEDOR | ID | 3 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_HISTORICO | ID | 156 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_HORAATUALIZADO | ID | 1 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_ITEMDRE | ID | 15 | {"row": 2, "legacy_id": null} |
+| blocking | MISSING_LEGACY_ID | TBL_LOGIN | ID | 78 | {"row": 2, "legacy_id": null} |
 | error | FK_MISSING_REFERENCE | TBL_PAGAMENTO | Pagamento.Aluno_ID | 115 | {"row": 25, "legacy_id": "1686", "value": "1152", "target": "TBL_ALUNO"} |
 | error | FK_MISSING_REFERENCE | TBL_PAGAMENTO | Pagamento.Escola_ID | 1 | {"row": 236, "legacy_id": "1461"} |
 | error | FK_MISSING_REFERENCE | TBL_PAGAMENTO | Pagamento_Aluno_ID | 1 | {"row": 25, "legacy_id": "1686", "value": "1152", "target": "TBL_ALUNO"} |
@@ -89,6 +134,7 @@
 | error | FK_MISSING_REFERENCE | TBL_PAGAMENTO_LISTAGEM | Pagamento_Listagem.Pagamento.ID | 6 | {"row": 13439, "legacy_id": "4953"} |
 | error | REQUIRED_FIELD_EMPTY | TBL_PAGAMENTO_LISTAGEM | Pagamento_Listagem.Parcela_Numero | 1 | {"row": 13333, "legacy_id": "65"} |
 | error | REQUIRED_FIELD_EMPTY | TBL_PAGAMENTO_LISTAGEM | Pagamento_Listagem.Valor_Parcela | 2 | {"row": 10312, "legacy_id": "8119"} |
+| blocking | MISSING_LEGACY_ID | TBL_PEDIDO | ID | 5080 | {"row": 2, "legacy_id": null} |
 | error | FK_MISSING_REFERENCE | TBL_PROCESSO | Processo_User_ID | 4 | {"row": 501, "legacy_id": "30", "value": "19", "target": "TBL_USER"} |
 | error | FK_MISSING_REFERENCE | TBL_PROCESSODETALHE | ProcessoDetalhe_ProcessoID | 224 | {"row": 2, "legacy_id": "2317"} |
 | error | FK_MISSING_REFERENCE | TBL_PROCESSODIVIDA | PROCESSODIVIDAS_DIVIDA_ID | 13 | {"row": 97, "legacy_id": "205", "value": "1272", "target": "TBL_DIVIDA"} |
@@ -98,6 +144,7 @@
 | warning | AMOUNT_UNPARSEABLE | TBL_PUBLICACAODETALHE | PUBLICACAODETALHE_VALORUNICO | 3625 | {"row": 2, "legacy_id": "1815", "value": "1014919-91.2021.8.26.0405-25/..."} |
 | error | FK_MISSING_REFERENCE | TBL_PUBLICACAODETALHE | PUBLICACAODETALHE_USER_ID | 294 | {"row": 3277, "legacy_id": "3246", "value": "19", "target": "TBL_USER"} |
 | error | FK_MISSING_REFERENCE | TBL_ROTA | ROTA_CLIENTE_ID | 6 | {"row": 27, "legacy_id": "229", "value": "12094", "target": "TBL_CLIENTE"} |
+| blocking | MISSING_LEGACY_ID | TBL_SUBITEMEXTRATO | ID | 7 | {"row": 2, "legacy_id": null} |
 | warning | DOCUMENT_MISSING | TBL_USER | USER_CPF | 23 | {"row": 2, "legacy_id": "1"} |
 
 ## Proximos passos

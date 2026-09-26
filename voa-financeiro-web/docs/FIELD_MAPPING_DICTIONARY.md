@@ -26,25 +26,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 | Aba | Tipo | Linhas no lote | Faltando no staging | Extra no staging |
 |---|---|---:|---:|---:|
-| TBL_CATEGORIAFILHODRE | empty_sheet | 0 | 17 | 0 |
-| TBL_CATEGORIAPAGAMENTO | empty_sheet | 0 | 22 | 0 |
-| TBL_CATEGORIAPAIDRE | empty_sheet | 0 | 17 | 0 |
-| TBL_CATEGORIAPRODUTO_FINANCEIRO | empty_sheet | 0 | 17 | 0 |
-| TBL_DREAUX | empty_sheet | 0 | 22 | 0 |
-| TBL_DREBASE | empty_sheet | 0 | 21 | 0 |
-| TBL_DREVALOR | empty_sheet | 0 | 26 | 0 |
 | TBL_EMAILLISTACONTATO | empty_sheet | 0 | 6 | 0 |
-| TBL_EXTRATOOLD_FINANCEIRO | empty_sheet | 0 | 44 | 0 |
-| TBL_EXTRATO_FINANCEIRO | empty_sheet | 0 | 46 | 0 |
-| TBL_FABRICANTE | empty_sheet | 0 | 17 | 0 |
-| TBL_FLUXOCAIXA | empty_sheet | 0 | 20 | 0 |
-| TBL_FORNECEDOR | empty_sheet | 0 | 17 | 0 |
-| TBL_HISTORICO | empty_sheet | 0 | 19 | 0 |
-| TBL_HORAATUALIZADO | empty_sheet | 0 | 20 | 0 |
-| TBL_ITEMDRE | empty_sheet | 0 | 19 | 0 |
-| TBL_LOGIN | empty_sheet | 0 | 22 | 0 |
-| TBL_PEDIDO | empty_sheet | 0 | 29 | 0 |
-| TBL_SUBITEMEXTRATO | empty_sheet | 0 | 21 | 0 |
 
 ## Provedores de `legacy_id` por tabela canonica
 
