@@ -15,12 +15,12 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Colunas `review` | 37 |
 | Colunas `unmapped` | 0 |
 | Problemas estruturais | 0 |
-| Itens de politica pendentes | 55 |
+| Itens de politica pendentes | 37 |
 
 ## Portao de aprovacao
 
 - Estrutural: OK. Todo mapa aponta para tabela/coluna existente no schema canonico.
-- Aprovacao: BLOQUEADA (55 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
+- Aprovacao: BLOQUEADA (37 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
 
 ## Conferencia staging x workbook
 
@@ -411,15 +411,15 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 - Entidade canonica: contacts
 - Tipo de linha: child
-- Observacoes: 54.782 telefones/e-mails de cliente: unica aba que cabe em contacts sem tabela nova. Status `proposed`: exige customer_id resolvido pelo legacy_id do cliente.
+- Observacoes: 54.782 telefones/e-mails de cliente: unica aba que cabe em contacts sem tabela nova. Status `confirmed` (operador, 25/09): customer_id resolvido pelo legacy_id do cliente.
 - Colunas: 5 (map=3, ignore=1, defer=0, review=1, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| CLIENTEENDTEL_CLIENTE_ID | map | contacts.customer_id | reference | trim | sim | customers | 54.777 preenchidos; a FK canonica e o UUID do cliente resolvido [status: proposed] |
-| CLIENTEENDTEL_TIPO | map | contacts.type | code | value_map_ci |  |  | 2 valores distintos; confirmar rotulos na carga [valores: telefone->phone, email->email] [status: proposed] |
-| CLIENTEENDTEL_VALOR | map | contacts.value | text | trim | sim |  | 54.345 preenchidos; 37.809 distintos [status: proposed] |
+| CLIENTEENDTEL_CLIENTE_ID | map | contacts.customer_id | reference | trim | sim | customers | 54.777 preenchidos; a FK canonica e o UUID do cliente resolvido |
+| CLIENTEENDTEL_TIPO | map | contacts.type | code | value_map_ci |  |  | 2 valores distintos; confirmar rotulos na carga [valores: telefone->phone, email->email] |
+| CLIENTEENDTEL_VALOR | map | contacts.value | text | trim | sim |  | 54.345 preenchidos; 37.809 distintos |
 | ID | review |  |  |  |  |  | 54.782 ids distintos sem destino canonico [gap: contacts_legacy_id] |
 
 ### TBL_CLIFOR
@@ -1161,17 +1161,17 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| ID | map | agreements.legacy_id | legacy_id | trim | sim |  | TBL_PAGAMENTO e a origem do acordo; TBL_DIVIDA fica como composicao em staging [status: proposed] |
-| Pagamento_CliAsaas_ID | map | asaas_customers.external_id | text | trim | sim |  | 1.122 preenchidos (2 ids repetidos): chave do cliente pagador no Asaas [status: proposed] |
+| ID | map | agreements.legacy_id | legacy_id | trim | sim |  | TBL_PAGAMENTO e a origem do acordo; TBL_DIVIDA fica como composicao em staging |
+| Pagamento_CliAsaas_ID | map | asaas_customers.external_id | text | trim | sim |  | 1.122 preenchidos (2 ids repetidos): chave do cliente pagador no Asaas |
 | Pagamento.ValorParcelaTotal | ignore |  |  |  |  |  | empty_column |
 | Pagamento.ValorPagoTotal | ignore |  |  |  |  |  | empty_column |
-| Pagamento.Nome_Aluno | map | customers.full_name | name | collapse_ws | sim |  | rotulo do cliente pagador sintetizado; sem este nome a linha nao cria customers e o acordo fica sem customer_id (LOAD_ROW_LINK_UNRESOLVED) [status: proposed] |
+| Pagamento.Nome_Aluno | map | customers.full_name | name | collapse_ws | sim |  | rotulo do cliente pagador sintetizado; sem este nome a linha nao cria customers e o acordo fica sem customer_id (LOAD_ROW_LINK_UNRESOLVED) |
 | Pagamento.Nome_Escola | ignore |  |  |  |  |  | denormalized_display_name |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
 | Pagamento.UsuarioFechamento | defer |  |  |  |  |  | user_link_requires_review |
-| Pagamento.Escola_ID | map | agreements.school_id | reference | trim | sim | schools | 1.571 preenchidos, 1 vazio [status: proposed] |
+| Pagamento.Escola_ID | map | agreements.school_id | reference | trim | sim | schools | 1.571 preenchidos, 1 vazio |
 | Attachments | ignore |  |  |  |  |  | attachment_metadata |
-| Pagamento.Aluno_ID | map | agreements.student_id | reference | trim |  | students | 1.568 preenchidos, 4 vazios; contem listas ('102;103') [status: proposed] |
+| Pagamento.Aluno_ID | map | agreements.student_id | reference | trim |  | students | 1.568 preenchidos, 4 vazios; contem listas ('102;103') |
 | Pagamento.Tipo | defer |  |  |  |  |  | JUDICIAL, EXTRAJUDICIAL, CEJUSC, PERSONALIZADO [gap: agreements_type] |
 | Pagamento_Nome | review |  |  |  |  |  | 73 valores distintos em 1.570 linhas |
 | Pagamento_USUARIOCRIACAO | defer |  |  |  |  |  | user_link_requires_review |
@@ -1236,41 +1236,41 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 - Entidade canonica: installments
 - Tipo de linha: child
-- Observacoes: 15.535 parcelas de acordo. Origem proposta de installments e payments (status `proposed`). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments/asaas_charges a parcela criada pela mesma linha de origem.
+- Observacoes: 15.535 parcelas de acordo. Origem confirmada de installments e payments (status `confirmed`, operador 25/09). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments/asaas_charges a parcela criada pela mesma linha de origem.
 - Colunas: 34 (map=10, ignore=13, defer=3, review=8, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
 | ID | review |  |  |  |  |  | 15.535 ids distintos; installments nao tem legacy_id [gap: installments_legacy_id] |
-| Pagamento_Listagem.Pagamento.ID | map | installments.agreement_id | reference | trim | sim | agreements | 15.529 preenchidos, 6 vazios, 1.508 acordos distintos [status: proposed] |
+| Pagamento_Listagem.Pagamento.ID | map | installments.agreement_id | reference | trim | sim | agreements | 15.529 preenchidos, 6 vazios, 1.508 acordos distintos |
 | Pagamento_Lista_ValorSucumbencia | defer |  |  |  |  |  | agreement_attrs_not_modeled |
-| Pagamento_Listagem.Valor_Parcela | map | installments.original_amount | numeric | money | sim |  | [status: proposed] |
-| Pagamento_Listagem.Valor_Pago | map | payments.amount | numeric | min_positive | sim |  | 13.245 preenchidos; payments so existe quando o valor pago e > 0 (vazio/zero/negativo descarta a linha) [status: proposed] |
-| Pagamento_Listagem.Data_Pagamento | map | payments.paid_at | datetime | iso_datetime |  |  | 11.983 preenchidos [status: proposed] |
-| Pagamento_Listagem.Data_Vencimento | map | installments.due_date | date | iso_date | sim |  | [status: proposed] |
-| Pagamento_Lista.Status | review |  |  |  |  |  | 5 rotulos: AGUARDANDO APROVACAO, NAO EXISTE REPASSE, PAGAMENTO DIRETO, REPASSE APROVADO, REPASSE REALIZADO |
+| Pagamento_Listagem.Valor_Parcela | map | installments.original_amount | numeric | money | sim |  |  |
+| Pagamento_Listagem.Valor_Pago | map | payments.amount | numeric | min_positive | sim |  | 13.245 preenchidos; payments so existe quando o valor pago e > 0 (vazio/zero/negativo descarta a linha) |
+| Pagamento_Listagem.Data_Pagamento | map | payments.paid_at | datetime | iso_datetime |  |  | 11.983 preenchidos |
+| Pagamento_Listagem.Data_Vencimento | map | installments.due_date | date | iso_date | sim |  |  |
+| Pagamento_Lista.Status | review |  |  |  |  |  | 5 rotulos, todos preenchidos (15.535 linhas): AGUARDANDO APROVACAO 7.524, REPASSE REALIZADO 6.993, NAO EXISTE REPASSE 744, PAGAMENTO DIRETO 176, REPASSE APROVADO 98. Proposta do operador (25/09), aguardando a migration 0007: AGUARDANDO APROVACAO > pending_approval, REPASSE APROVADO > approved, REPASSE REALIZADO > released, NAO EXISTE REPASSE > not_applicable, PAGAMENTO DIRETO > direct_payment; destino payments.retention_status [gap: payments_retention_approval] |
 | Pagamento_Lista.DataAprovacao | review |  |  |  |  |  | schema_gap_pending [gap: payments_retention_approval] |
-| Pagamento_Lista.ValorRetido | map | payments.retained_amount | numeric | money |  |  | retencao por parcela: min(valor_pago * percentual, meta da escola) [status: proposed] |
+| Pagamento_Lista.ValorRetido | map | payments.retained_amount | numeric | money |  |  | retencao por parcela: min(valor_pago * percentual, meta da escola) |
 | Pagamento_Lista.MesAnoProgramacaoRepasse | review |  |  |  |  |  | schema_gap_pending [gap: payments_retention_approval] |
 | Modified | ignore |  |  |  |  |  | legacy_audit_only |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
-| Pagamento_Listagem.Parcela_Numero | map | installments.installment_number | integer | positive_integer | sim |  | 15.534 preenchidos; a CHECK do schema exige > 0, entao 0/negativo e lixo e nao vira parcela (nem conta no agregado do acordo); unicidade por (agreement_id, installment_number) [status: proposed] |
+| Pagamento_Listagem.Parcela_Numero | map | installments.installment_number | integer | positive_integer | sim |  | 15.534 preenchidos; a CHECK do schema exige > 0, entao 0/negativo e lixo e nao vira parcela (nem conta no agregado do acordo); unicidade por (agreement_id, installment_number) |
 | Pagamento_Lista.MesAnoRepasseRealizado | review |  |  |  |  |  | schema_gap_pending [gap: payments_retention_approval] |
 | Pagamento_Lista.InicioDivida | ignore |  |  |  |  |  | ano de inicio da divida, derivavel de installments |
 | Pagamento_Lista.TipoAcordo | defer |  |  |  |  |  | agreement_attrs_not_modeled [gap: agreements_type] |
-| Pagamento_Lista.PorcentagemAcordo | review |  |  |  |  |  | 7.080 preenchidos, 76 valores distintos |
+| Pagamento_Lista.PorcentagemAcordo | review |  |  |  |  |  | 7.080 preenchidos, 76 valores distintos entre 0 e 0,35: e a fracao de retencao usada na formula de ValorRetido (min(valor_pago * percentual, meta da escola)). Proposta do operador (25/09), aguardando a migration 0007: payments.retention_percentage numeric(5,4) [gap: payments_retention_approval] |
 | Pagamento_Lista.PGTColegio | ignore |  |  |  |  |  | 2 valores distintos (flag) |
 | Modified By | ignore |  |  |  |  |  | legacy_audit_only |
 | Pagamento_Lista_Vazio | ignore |  |  |  |  |  | computed_cache |
 | Pagamento_Listagem_Tipo | review |  |  |  |  |  | 15.063 preenchidos, 2 valores distintos |
 | Pagamento_Extrato_ID | defer |  |  |  |  |  | billing_integration_not_modeled |
 | Pagamento_Categoria | ignore |  |  |  |  |  | empty_column |
-| Pagamento_Banco_Status | review |  |  |  |  |  | 8 rotulos de boleto/cobranca [gap: payments_charge_status] |
-| Pagamento_PagAsaas_ID | map | asaas_charges.external_id | text | trim |  |  | 6.369 distintos = unico na origem [status: proposed] |
+| Pagamento_Banco_Status | review |  |  |  |  |  | 9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). Proposta do operador (25/09): BAIXADO/PAGO AUTOMATICO/PAGAMENTO MANUAL/PAGO COLEGIO > paid, CARTAO ITAU > paid com billing_type CREDIT_CARD, PENDENTE > pending, ATRASADO > overdue, vazio > unknown e `z` descartado como invalid_label (1 linha em migration_errors); destino asaas_charges.status [gap: payments_charge_status] |
+| Pagamento_PagAsaas_ID | map | asaas_charges.external_id | text | trim |  |  | 6.369 distintos = unico na origem |
 | Pagamento_CliAsaas_ID | ignore |  |  |  |  |  | empty_column |
-| Pagamento_LinkPag | map | asaas_charges.invoice_url | url | trim |  |  | [status: proposed] |
-| Pagamento_CopiaeCola | map | asaas_charges.pix_qr_code | text | trim |  |  | [status: proposed] |
+| Pagamento_LinkPag | map | asaas_charges.invoice_url | url | trim |  |  |  |
+| Pagamento_CopiaeCola | map | asaas_charges.pix_qr_code | text | trim |  |  |  |
 | Pagamento_Whats | ignore |  |  |  |  |  | legacy_flag |
 | Pagamento_Email | ignore |  |  |  |  |  | legacy_flag |
 | Pagamento_BoletoCriado | ignore |  |  |  |  |  | legacy_flag |
@@ -1545,7 +1545,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | `agreements_source_resolution` | agreements.legacy_id precisa vir de uma unica origem (TBL_PAGAMENTO ou TBL_DIVIDA); decisao pendente | 10 |
 | `agreements_type` | agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO) | 2 |
 | `agreements_closed_at` | agreements nao tem data de fechamento/assinatura | 1 |
-| `payments_retention_approval` | retencao e repasse nao tem datas de aprovacao, programacao e realizacao | 3 |
+| `payments_retention_approval` | retencao e repasse nao tem datas de aprovacao, programacao e realizacao | 5 |
 | `payments_charge_status` | payments/asaas_charges nao tem mapa de status de boleto do legado | 1 |
 | `schools_contact_address` | schools nao tem contato nem endereco; contacts e restrito a customers | 10 |
 | `students_contact` | students nao tem contato proprio; contacts e restrito a customers | 21 |
@@ -1589,7 +1589,7 @@ Colunas: `TBL_PAGAMENTO.Pagamento_DataFechamento`.
 
 retencao e repasse nao tem datas de aprovacao, programacao e realizacao
 
-Colunas: `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.DataAprovacao`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.MesAnoProgramacaoRepasse`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.MesAnoRepasseRealizado`.
+Colunas: `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.Status`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.DataAprovacao`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.MesAnoProgramacaoRepasse`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.MesAnoRepasseRealizado`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.PorcentagemAcordo`.
 
 ### payments_charge_status
 
@@ -1643,7 +1643,6 @@ Colunas: `TBL_USER.ID`.
 
 | Codigo | Motivo | Ocorrencias | Abas | Exemplos |
 |---|---|---:|---|---|
-| `MAPPING_NOT_CONFIRMED` | `proposed` | 18 | TBL_CLIENTEENDTEL, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM | `TBL_CLIENTEENDTEL.CLIENTEENDTEL_CLIENTE_ID`, `TBL_CLIENTEENDTEL.CLIENTEENDTEL_TIPO`, `TBL_CLIENTEENDTEL.CLIENTEENDTEL_VALOR`, `TBL_PAGAMENTO.ID` |
 | `REVIEW_REQUIRED` | `name_only_link_not_allowed` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.Responsavel_Financeiro` |
 | `REVIEW_REQUIRED` | `pending_policy` | 11 | TBL_DIVIDA, TBL_DIVIDA_LISTAGEM, TBL_ENDTEL | `TBL_DIVIDA.ID`, `TBL_DIVIDA.Divida.Aluno.ID`, `TBL_DIVIDA.Divida_Nome`, `TBL_DIVIDA.Divida.Pagamento.ID` |
 | `REVIEW_REQUIRED` | `schema_gap_pending` | 8 | TBL_CLIENTEENDTEL, TBL_DIVIDA_LISTAGEM, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM, TBL_USER | `TBL_CLIENTEENDTEL.ID`, `TBL_DIVIDA_LISTAGEM.ID`, `TBL_PAGAMENTO.Pagamento_DataFechamento`, `TBL_PAGAMENTO_LISTAGEM.ID` |

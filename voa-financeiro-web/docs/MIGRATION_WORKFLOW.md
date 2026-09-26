@@ -6,13 +6,13 @@
 - O importador dry-run grava somente `migration_batches`, `migration_rows`, `migration_errors` e `reconciliation_reports`.
 - Nenhuma escola, cliente, aluno, acordo, parcela, pagamento ou cobranca canonica e criada nesse modo.
 - Senhas, API keys e tokens sao substituidos por `[REDACTED]` antes de persistir o payload.
-- O lote completo `VOA.xlsx` (419.700 linhas em 39 abas) esta em staging e ja passou por validacao. A revisao de 2026-09-25 20:01 do arquivo tem **60 abas e 546.346 linhas de dados** (contagem do `--preview` do stager) e **ainda nao foi estagiada**: ate esse staging rodar, o `db:field-dictionary-check` mostra 19 `empty_sheet` (informativo, nao derruba o gate).
+- O lote completo `VOA.xlsx` (419.700 linhas em 39 abas) esta em staging e ja passou por validacao. A revisao de 2026-09-25 20:01 do arquivo tem **60 abas e 546.346 linhas de dados**; o staging dela foi tentado em 2026-09-25 21:33 e **abortou por falta de disco no Supabase** (o projeto entrou em somente-leitura e a tentativa foi desfeita por inteiro - ver "Incidente de disco no staging"). Ate esse staging rodar, o `db:field-dictionary-check` continua mostrando os numeros do lote antigo, inclusive 19 `empty_sheet` (informativo, nao derruba o gate).
 - A validacao registra achados por aba/campo, marca linhas com erro e atualiza `reconciliation_reports`.
 - O relatorio consolidado da ultima validacao esta em `docs/STAGING_VALIDATION_REPORT.md`.
 - O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 30 `map`, 76 `ignore`, 713 `defer` e 37 `review`.
 - A comparacao entre o Canvas App legado e as planilhas esta em `docs/LEGACY_APP_SOURCE_GAPS.md`, gerada por `scripts/audit_legacy_app_sources.py` (`npm run db:audit-app-sources`): 2 tabelas lidas pela app nao tem aba (`TBL_CONSULTA` e `TBL_EMAILISTACONTATO`, deixadas fora de proposito), 2 campos de negocio faltam nas abas que existem (`CONTA_NOME`, `EMPRESA_ID`), 3 tabelas tem o conteudo em aba irma (`_FINANCEIRO`) e 5 fontes fora do Dataverse (conectores e Excel Online) nunca estiveram no workbook.
 - O relatorio do dicionario esta em `docs/FIELD_MAPPING_DICTIONARY.md`, gerado por `scripts/build_field_dictionary.py`.
-- A carga canonica (fase 7) esta em `scripts/load_canonical_batch.py`, com dry-run por padrao. Em 2026-09-25 ela carregou 78.217 linhas de `schools`, `customers`, `contacts` e `students` e, na mesma data, a cadeia financeira (`agreements`, `installments`, `payments`, `asaas_customers` e o cliente pagador sintetizado) com `agreements.total_amount` fechando exatamente com a soma de `installments.original_amount`; o relatorio da ultima rodada esta em `docs/CANONICAL_LOAD_REPORT.md`.
+- A carga canonica (fase 7) esta em `scripts/load_canonical_batch.py`, com dry-run por padrao. Em 2026-09-25 ela carregou 78.217 linhas de `schools`, `customers`, `contacts` e `students` e, na mesma data, a cadeia financeira (`agreements`, `installments`, `payments`, `asaas_customers` e o cliente pagador sintetizado) com `agreements.total_amount` fechando exatamente com a soma de `installments.original_amount`; o relatorio da ultima rodada esta em `docs/CANONICAL_LOAD_REPORT.md`. Com os 22 mapeamentos `proposed` confirmados pelo operador em 2026-09-25, a proxima execucao **nao** precisa mais de `--allow-proposed` (a flag segue aceita para reproduzir a carga historica).
 - O profiler esta em `scripts/profile_legacy_workbook.py`.
 - O importador de staging esta em `scripts/stage_legacy_workbook.py`.
 - O validador de staging esta em `scripts/validate_staging_batch.py`.
@@ -22,7 +22,7 @@
 ## Fases obrigatorias
 
 1. **Perfil** (concluido): contar registros, colunas, vazios, duplicidades e campos sensiveis.
-2. **Dicionario** (concluido com pendencias): cada coluna legada recebe decisao explicita (`map`, `ignore`, `defer` ou `review`) em `scripts/legacy_field_map.json`, com tipo, normalizacao e motivo. As colunas `review` e os mapeamentos `proposed` bloqueiam a aprovacao do lote.
+2. **Dicionario** (concluido com pendencias): cada coluna legada recebe decisao explicita (`map`, `ignore`, `defer` ou `review`) em `scripts/legacy_field_map.json`, com tipo, normalizacao e motivo. As colunas `review` bloqueiam a aprovacao do lote; os mapeamentos `proposed` bloqueiam ate serem confirmados (em 2026-09-25 o operador confirmou os 22 mapeamentos e agregados que estavam `proposed`, o que derrubou o gate de 55 para 37 itens - hoje todos sao `review`).
 3. **Staging** (concluido para `VOA.xlsx`): carregar cada linha com origem, aba, ID legado, hash e lote de importacao.
 4. **Validacao** (concluido para `VOA.xlsx`): verificar chaves estrangeiras, documentos, nomes, datas, valores e registros sem relacionamento.
 5. **Reconciliacao** (em andamento): gerar candidatos de duplicidade e comparar contagens/totais com o workbook.
@@ -210,6 +210,139 @@ Pendencias desta cadeia:
 - 5 parcelas de 0/negativo foram descartadas por `positive_integer` (linhas que antes eram recusadas pelo banco como `LOAD_ROW_REJECTED`);
 - os 4 acordos com total derivado ajustado (`38`, `39`, `41`, `1663`) foram corrigidos a partir do filho canonico (parcela de numero 0/negativo removida da contagem e do total);
 - `asaas_charges` continua bloqueada: faltam `asaas_customer_id`, `environment`, `billing_type`, `due_date`, `status` e `value`.
+
+## Proposta de mapa de status de cobranca e repasse (2026-09-25)
+
+Levantamento feito direto no staging do lote `5cd769e4-eaaa-49bd-b5ba-7e03947e5e09` (aba
+`TBL_PAGAMENTO_LISTAGEM`, 15.535 linhas) com uma sonda somente-leitura que faz
+`DISTINCT payload->>'<coluna>'`. As duas colunas que o dicionario marca como
+`review: status_map_unconfirmed` tem, na pratica, **9** e **5** valores (nao 8 e 5):
+
+### `Pagamento_Banco_Status` -> `asaas_charges.status`
+
+| Rotulo legado | Linhas | Valor canonico proposto | Observacao |
+|---|---:|---|---|
+| (vazio) | 4.799 | `unknown` | a origem nao afirma status; virar `pending` seria inventar dado |
+| `BAIXADO` | 4.175 | `paid` | baixa lancada a partir do extrato |
+| `PAGO AUTOMATICO` | 3.250 | `paid` | baixa automatica |
+| `ATRASADO` | 1.240 | `overdue` | |
+| `PENDENTE` | 1.127 | `pending` | |
+| `PAGO COLEGIO` | 439 | `paid` | |
+| `PAGAMENTO MANUAL` | 353 | `paid` | |
+| `CARTAO ITAU` | 151 | `paid` | unico caso de cartao; ver decisao de `billing_type` |
+| `z` | 1 | descartado | lixo de digitacao: sai como `LOAD_VALUE_UNMAPPED` (1 linha, nao bloqueia o lote) |
+
+Os 8 rotulos de negocio colapsam em 4 valores canonicos (`paid`, `pending`, `overdue` e o
+`unknown` do vazio). O vazio e o `z` **nao** entram em `values`: o vazio depende de um `DEFAULT` no
+schema (item 1 abaixo) e o `z` deve aparecer como achado, nao como dado aceito.
+
+### `Pagamento_Lista.Status` (repasse) -> `payments.retention_status`
+
+| Rotulo legado | Linhas | Valor canonico proposto |
+|---|---:|---|
+| `AGUARDANDO APROVAÇÃO` | 7.524 | `pending_approval` |
+| `REPASSE REALIZADO` | 6.993 | `released` |
+| `NÃO EXISTE REPASSE` | 744 | `not_applicable` |
+| `PAGAMENTO DIRETO` | 176 | `direct_payment` |
+| `REPASSE APROVADO` | 98 | `approved` |
+
+Aqui o mapa cobre 100% da coluna: os 15.535 valores estao preenchidos, sem residuo.
+
+### O que falta para aplicar (nenhum item abaixo foi aplicado)
+
+1. `asaas_charges.status` e `NOT NULL` **sem `DEFAULT`**. Com `required: false`, as 4.799 linhas
+   vazias ficariam sem valor e o `INSERT` canonico falharia; a migration 0007 precisa de
+   `ALTER TABLE asaas_charges ALTER COLUMN status SET DEFAULT 'unknown';` para que o vazio saia
+   como `LOAD_VALUE_DEFAULTED` (rastreado no relatorio de carga) em vez de erro;
+2. `Pagamento_Lista.Status`, `Pagamento_Lista.DataAprovacao`,
+   `Pagamento_Lista.MesAnoProgramacaoRepasse` e `Pagamento_Lista.MesAnoRepasseRealizado` estao sem
+   destino: `payments` tem `retained_amount`/`released_amount` (0005), mas nao o estado nem as
+   datas do repasse. A mesma 0007 deve trazer o bloco de retencao:
+
+| Coluna legada | Preenchidas | Coluna canonica proposta |
+|---|---:|---|
+| `Pagamento_Lista.Status` | 15.535 | `payments.retention_status text` |
+| `Pagamento_Lista.DataAprovacao` | 7.091 (2020-11-09 a 2026-03-30) | `payments.retention_approved_at date` |
+| `Pagamento_Lista.MesAnoProgramacaoRepasse` | 7.087 (`MM AAAA`, 01 2021 a 12 2025) | `payments.retention_scheduled_month text` |
+| `Pagamento_Lista.MesAnoRepasseRealizado` | 6.875 (2020-12-07 a 2026-03-06) | `payments.retention_released_at date` |
+| `Pagamento_Lista.PorcentagemAcordo` | 7.080 (0 a 0,35) | `payments.retention_percentage numeric(5, 4)` |
+| `Pagamento_Lista.ValorRetido` | 7.091 (0 a 99,925) | `payments.retained_amount` (ja mapeado e confirmado) |
+
+`PorcentagemAcordo` estava como `review: semantics_unclear` com "76 valores distintos"; o
+levantamento mostra que ele e a **fracao de retencao** (0 a 0,35 = 0% a 35%) que alimenta a formula
+de `Pagamento_Lista.ValorRetido` ja registrada no mapa
+(`min(valor_pago * percentual, meta da escola)`). Por isso ele entra no mesmo bloco de retencao em
+vez de virar campo solto;
+
+3. com a 0007 aplicada, estas colunas podem virar `map` + `status: proposed` (e depois
+   `confirmed`), removendo do gate os itens `status_map_unconfirmed` e `payments_retention_approval`.
+
+### Decisao de `billing_type` e `environment` das cobrancas
+
+- `asaas_customers.environment` e `asaas_charges.environment` ficam em `production` (decisao do
+  operador, ja registrada na regra `const: "production"` de
+  `Pagamento_CliAsaas_ID -> asaas_customers.environment`);
+- `asaas_charges.billing_type` fica em **`BOLETO`**: toda cobranca do legado nasce de link/copia e
+  cola de boleto (`Pagamento_LinkPag`, `Pagamento_CopiaeCola`), e o QR Code PIX do Asaas e atributo
+  **do boleto**, nao uma segunda cobranca (por isso nao ha `PIX` solto nas linhas com `PagAsaas_ID`);
+- a excecao conhecida sao as 151 linhas com `Pagamento_Banco_Status = 'CARTAO ITAU'`. O dicionario
+  nao expressa "valor de uma coluna depende de outra" (as regras sao por coluna), entao fica
+  registrado como decisao de operacao: ou todas entram como `BOLETO` (recomendado, para nao
+  inventar historico de cobranca) ou a carga ganha um passo proprio para essas 151 linhas.
+
+## Incidente de disco no staging de 2026-09-25 21:33 (Supabase em somente-leitura)
+
+O staging da revisao de 20:01 (`VOA.xlsx`, 60 abas, 546.346 linhas) foi disparado as 21:33:48 e
+abortou as 21:38:18, quando o Supabase encheu o disco:
+
+```text
+psycopg.errors.DiskFull: could not write to file "base/pgsql_tmp/pgsql_tmp126096.0": No space left on device
+psycopg.OperationalError: consuming input failed: server closed the connection unexpectedly
+  File "scripts/stage_legacy_workbook.py", line 453, in persist_staging
+```
+
+Estado apurado depois do incidente (tudo somente leitura, nada foi apagado):
+
+| Metrica | Valor |
+|---|---:|
+| `pg_database_size()` | 1.076,8 MB |
+| `migration_rows` (heap / heap + indices) | 770,2 MB / 1.042,2 MB |
+| Linhas em `migration_rows` | 443.736 (23.961 + 419.700 + 75) |
+| Custo por linha (heap + indices) | 2,40 KB -> as 546.346 linhas da revisao nova exigem ~1,25 GB |
+| Lotes em `migration_batches` | 3 (o lote novo **nao** existe) |
+| `default_transaction_read_only` | `on` (quota de disco do projeto) |
+| Tabelas canonicas somadas | ~35 MB (o problema e o payload de staging) |
+
+- **a tentativa nao deixou residuo**: `persist_staging` roda em transacao unica, entao lote, linhas
+  e relatorios foram desfeitos; os 3 lotes antigos seguem com as mesmas 443.736 linhas e a carga
+  canonica continua ancorada em `5cd769e4-...`;
+- **a escrita esta bloqueada para todos**, inclusive limpeza: `CREATE TEMP TABLE` e
+  `DELETE ... WHERE false` respondem `cannot execute ... in a read-only transaction`, ou seja nao
+  da para apagar lote descartavel via SQL enquanto o projeto estiver nesse modo;
+- o `DiskFull` tambem derrubou a sonda de retencao que usava `sort`, por isso as contagens desta
+  secao e da proposta acima vem de agregacoes leves;
+- a segunda execucao do `npm run db:field-dictionary-check` (21:46) morreu no mesmo `DiskFull` ao
+  ler o inventario do staging, entao `docs/FIELD_MAPPING_DICTIONARY.md` **nao** foi regerado: ele
+  ficou como a execucao de 21:38 (37 itens de politica, 0 estruturais) e as 3 linhas afetadas pela
+  ultima anotacao (`Pagamento_Lista.PorcentagemAcordo`, a contagem da lacuna
+  `payments_retention_approval` e a lista de colunas dessa lacuna) foram alinhadas a mao com o
+  mapa; a proxima execucao bem-sucedida do gerador reescreve o arquivo com o mesmo conteudo.
+
+Caminhos para destravar (decisao do operador):
+
+1. **liberar disco no projeto Supabase** (dashboard, Compute/Disk ou upgrade de plano) - e o unico
+   caminho sem mudanca de codigo;
+2. com escrita liberada: `VACUUM (FULL, ANALYZE) migration_rows`, que devolve o espaco das tuplas
+   mortas da transacao abortada;
+3. se o espaco continuar apertado, apagar os lotes descartaveis ja documentados como tais
+   (`f1691f22-...`, 23.961 linhas, duplicata de `TBL_PAGAMENTO_FINANCEIRO`; `b0267238-...`, 75
+   linhas) e, so depois da revisao nova validada, decidir sobre o lote antigo `5cd769e4-...`
+   (419.700 linhas, ~880 MB) - a rastreabilidade canonica sobrevive em `legacy_id`/`legacy_table`,
+   mas o payload de auditoria daquela revisao se perde;
+4. alternativa sem upgrade: estagiar e validar em Postgres local e enviar ao Supabase somente as
+   tabelas canonicas (~35 MB). Isso exige uma flag `--staging-url` no
+   `scripts/load_canonical_batch.py`, para que a leitura de `migration_rows` e a escrita canonica
+   usem conexoes diferentes.
 
 ## Pendencias de entrada ainda abertas
 

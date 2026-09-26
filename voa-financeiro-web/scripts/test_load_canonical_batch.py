@@ -942,7 +942,7 @@ class UniqueKeyTests(unittest.TestCase):
 
 
 class RealDictionaryTests(unittest.TestCase):
-    """The real dictionary must keep the same readiness split the report documents."""
+    """The real dictionary must keep the readiness split documented after the 2026-09-25 confirmation."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -954,28 +954,29 @@ class RealDictionaryTests(unittest.TestCase):
     def test_source_name_matches_the_staged_workbook(self) -> None:
         self.assertEqual(self.dictionary["source_name"], "VOA.xlsx")
 
-    def test_master_data_needs_the_financial_sheet_approval(self) -> None:
-        """TBL_PAGAMENTO synthesises the paying customer, so `customers` waits for approval."""
-        self.assertEqual(self.tables["schools"].status, "ready")
-        self.assertEqual(self.tables["students"].status, "ready")
-        self.assertEqual(self.tables["customers"].blocked_reason, "mapping_not_confirmed")
-        self.assertIn("full_name", self.tables["customers"].proposed_columns)
-        approved = build_plan(self.dictionary, self.schema, None, {"customers"})["tables"]
-        self.assertEqual(approved["customers"].status, "ready")
+    def test_master_data_is_ready_after_the_operator_confirmation(self) -> None:
+        """The 22 `proposed` mappings were confirmed by the operator on 2026-09-25.
 
-    def test_contacts_wait_for_an_explicit_approval(self) -> None:
-        self.assertEqual(self.tables["contacts"].blocked_reason, "mapping_not_confirmed")
-        approved = build_plan(self.dictionary, self.schema, None, {"contacts", "customers"})["tables"]
+        TBL_PAGAMENTO synthesises the paying customer, so `customers` only became loadable
+        once that decision was recorded as `confirmed` in the dictionary.
+        """
+        for table in ("schools", "students", "customers"):
+            self.assertEqual(self.tables[table].status, "ready", table)
+            self.assertEqual(self.tables[table].proposed_columns, [], table)
+
+    def test_contacts_do_not_wait_for_an_extra_approval(self) -> None:
+        self.assertEqual(self.tables["contacts"].status, "ready")
+        self.assertEqual(self.tables["contacts"].proposed_columns, [])
+        approved = build_plan(self.dictionary, self.schema, None, {"contacts"})["tables"]
         self.assertEqual(approved["contacts"].status, "ready")
 
-    def test_agreements_cover_required_columns_and_wait_for_approval(self) -> None:
+    def test_agreements_cover_required_columns_and_are_ready(self) -> None:
         agreements = self.tables["agreements"]
         self.assertEqual(agreements.missing_required, [])
-        self.assertEqual(agreements.blocked_reason, "mapping_not_confirmed")
+        self.assertEqual(agreements.status, "ready")
+        self.assertEqual(agreements.proposed_columns, [])
         self.assertEqual(agreements.links, {"customer_id": "customers"})
         self.assertEqual(sorted(agreements.aggregates), ["installments_count", "total_amount"])
-        approved = build_plan(self.dictionary, self.schema, None, {"agreements", "customers"})["tables"]
-        self.assertEqual(approved["agreements"].status, "ready")
 
     def test_the_synthesised_customer_keeps_one_row_per_agreement(self) -> None:
         rules = self.dictionary["sheets"]["TBL_PAGAMENTO"]["columns"]
@@ -985,11 +986,17 @@ class RealDictionaryTests(unittest.TestCase):
         )
         self.assertEqual({rule["match"] for rule in providers}, {"ID"})
 
-    def test_financial_children_are_blocked_by_policy(self) -> None:
-        self.assertEqual(self.tables["installments"].blocked_reason, "mapping_not_confirmed")
-        self.assertEqual(self.tables["payments"].blocked_reason, "mapping_not_confirmed")
-        self.assertEqual(self.tables["asaas_charges"].blocked_reason, "required_columns_uncovered")
-        self.assertEqual(self.tables["asaas_customers"].blocked_reason, "mapping_not_confirmed")
+    def test_financial_children_are_ready_except_asaas_charges(self) -> None:
+        for table in ("installments", "payments", "asaas_customers"):
+            self.assertEqual(self.tables[table].status, "ready", table)
+            self.assertEqual(self.tables[table].proposed_columns, [], table)
+        charges = self.tables["asaas_charges"]
+        self.assertEqual(charges.status, "blocked")
+        self.assertEqual(charges.blocked_reason, "required_columns_uncovered")
+        self.assertEqual(
+            sorted(charges.missing_required),
+            ["asaas_customer_id", "billing_type", "due_date", "environment", "status", "value"],
+        )
 
     def test_installments_link_payments_to_the_same_row(self) -> None:
         self.assertEqual(self.tables["payments"].links, {"installment_id": "installments"})
