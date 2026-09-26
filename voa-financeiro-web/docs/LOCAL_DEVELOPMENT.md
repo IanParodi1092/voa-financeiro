@@ -41,3 +41,45 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 ```
 
 Diagnostico completo em `docs/MIGRATION_WORKFLOW.md` ("Investigacao de encoding e acentos").
+
+## Banco local para a API e para os testes de integracao
+
+Com o Supabase de desenvolvimento em somente-leitura (cota de disco) e a carga canonica da revisao
+de 546.346 linhas ja commitada no Postgres local, o caminho de desenvolvimento passa a ser o
+container local:
+
+```powershell
+# a API le o canonico local e o staging continua na mesma instancia
+$env:DATABASE_URL = "postgresql://postgres:SENHA@localhost:5434/voa_staging"
+npm run db:migrate      # aplica 0007_auth_refresh_tokens.sql (login com refresh + rotacao)
+npm run dev:api
+```
+
+Os testes de integracao de auth/RBAC usam **PostgreSQL descartavel**: as migrations rodam num schema
+temporario (`search_path`) que e removido no fim, entao o banco escolhido nao e alterado.
+
+```powershell
+docker exec voa-staging createdb -U postgres voa_api_test
+$env:TEST_DATABASE_URL = "postgresql://postgres:SENHA@localhost:5434/voa_api_test"
+npm run test:integration
+```
+
+Sem `TEST_DATABASE_URL` o bloco inteiro e ignorado, entao `npm test` permanece verde em maquina sem
+banco. Os testes cobrem login (sucesso e falha auditada), cookie `voa_refresh` httpOnly,
+`/auth/me`, rotacao do refresh (reuso do token antigo recebe 401), RBAC (`viewer` recebe 403 nas
+escritas), a cadeia `schools`/`customers`/`students`/`contacts`/`agreements`/`installments`/`payments`
+e `GET /audit-logs` restrito ao `admin`.
+
+Para criar o primeiro administrador no banco local, aponte as duas variaveis (`create-admin` prefere
+`DIRECT_DATABASE_URL`) e informe e-mail e senha temporarios:
+
+```powershell
+$env:DIRECT_DATABASE_URL = "postgresql://postgres:SENHA@localhost:5434/voa_staging"
+$env:ADMIN_EMAIL = "admin@voa.local"
+$env:ADMIN_PASSWORD = "troque-esta-senha-123"
+npm run auth:create-admin
+```
+
+O login devolve o access token e o cookie `voa_refresh`; a senha temporaria deve ser trocada assim que
+o operador tiver a tela de perfil.
+

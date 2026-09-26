@@ -9,6 +9,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "test:integration": "vitest run src/app.integration.test.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "auth:create-admin": "tsx src/auth/create-admin.ts"
   },

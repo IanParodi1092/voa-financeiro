@@ -1,13 +1,23 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import jwt from '@fastify/jwt';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { AppConfig } from './config.js';
 import { verifyPassword } from './auth/password.js';
+import {
+  ACCESS_TOKEN_TTL_SECONDS,
+  REFRESH_TOKEN_TTL_SECONDS,
+  createRefreshToken,
+  createSessionTokenId,
+  hashRefreshToken
+} from './auth/tokens.js';
+import { clearRefreshCookie, readCookie, serializeRefreshCookie } from './auth/cookies.js';
+import { hasPermission, type Permission } from './auth/roles.js';
+import { recordAudit } from './audit.js';
 
 const loginSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -66,23 +76,105 @@ const paymentSchema = z.object({
   externalId: z.string().trim().max(200).optional()
 });
 
-async function requireAuthentication(request: Parameters<NonNullable<FastifyInstance['addHook']>>[1] extends never ? never : any, reply: any) {
+function sendUnauthorized(request: FastifyRequest, reply: FastifyReply): void {
+  reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Authentication required', correlationId: request.id });
+}
+
+function sendForbidden(request: FastifyRequest, reply: FastifyReply, permission: Permission): void {
+  reply.code(403).send({
+    code: 'FORBIDDEN',
+    message: `Role lacks the ${permission} permission`,
+    correlationId: request.id
+  });
+}
+
+/** Claims of the verified access token, or `null` when the request was already answered with 401. */
+async function verifiedClaims(request: FastifyRequest, reply: FastifyReply) {
   try {
     await request.jwtVerify();
   } catch {
-    return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Authentication required', correlationId: request.id });
+    sendUnauthorized(request, reply);
+    return null;
   }
+  const claims = request.user as { sub?: string; sid?: string; name?: string; roles?: string[] };
+  return {
+    sub: String(claims.sub ?? ''),
+    sid: claims.sid,
+    name: claims.name,
+    roles: Array.isArray(claims.roles) ? claims.roles : []
+  };
+}
+
+/** Builds the preHandler that authenticates the request and requires `permission`. */
+function requirePermission(permission: Permission) {
+  return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    const claims = await verifiedClaims(request, reply);
+    if (!claims) return;
+    if (!hasPermission(claims.roles, permission)) sendForbidden(request, reply, permission);
+  };
+}
+
+/**
+ * Authenticates the request and requires the `read` permission (every role has it).
+ * Domain writes declare `requirePermission('catalog:write')` or `requirePermission('finance:write')`.
+ */
+const requireAuthentication = requirePermission('read');
+
+/** preHandler for the auth routes: a valid access token is enough (no role required). */
+const authenticate = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+  await verifiedClaims(request, reply);
+};
+
+/** Id of the authenticated user, for the audit trail. */
+function actorIdOf(request: FastifyRequest): string | null {
+  const claims = request.user as { sub?: string } | undefined;
+  return claims?.sub ?? null;
 }
 
 export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
   const app = Fastify({ logger: { level: config.LOG_LEVEL }, genReqId: () => randomUUID() });
   app.register(helmet);
-  app.register(cors, { origin: config.corsOrigins });
+  app.register(cors, { origin: config.corsOrigins, credentials: true });
   app.register(rateLimit, { max: config.RATE_LIMIT_MAX, timeWindow: '1 minute' });
   app.register(jwt, { secret: config.AUTH_JWT_SECRET, sign: { expiresIn: '15m' } });
   app.addHook('onRequest', async (request, reply) => {
     reply.header('x-correlation-id', request.id);
   });
+
+  type Queryable = Pool | PoolClient;
+
+  /**
+   * Creates one `auth_sessions` row and the short access token that points at it.
+   *
+   * `expires_at` is the session window (the refresh token lifetime) and not the `exp` of the access
+   * token: the access token is short by its own `exp`, and the refresh token is what keeps the
+   * session alive. Only the HMAC-SHA256 of the refresh token is persisted.
+   */
+  const issueSession = async (
+    executor: Queryable,
+    userId: string,
+    displayName: string,
+    roles: string[],
+    userAgent: string | undefined
+  ) => {
+    const tokenId = createSessionTokenId();
+    const refreshToken = createRefreshToken();
+    await executor.query(
+      `INSERT INTO auth_sessions (user_id, token_id, refresh_token_hash, refresh_expires_at, expires_at, user_agent)
+       VALUES ($1, $2, $3, now() + make_interval(secs => $4::int), now() + make_interval(secs => $4::int), $5)`,
+      [userId, tokenId, hashRefreshToken(refreshToken, config.refreshSecret), REFRESH_TOKEN_TTL_SECONDS, userAgent ?? null]
+    );
+    const accessToken = app.jwt.sign({ sub: userId, sid: tokenId, name: displayName, roles });
+    return { tokenId, refreshToken, accessToken };
+  };
+
+  const setRefreshCookie = (reply: FastifyReply, refreshToken: string): void => {
+    reply.header('set-cookie', serializeRefreshCookie(config.refreshCookie, refreshToken, REFRESH_TOKEN_TTL_SECONDS));
+  };
+
+  const clearRefresh = (reply: FastifyReply): void => {
+    reply.header('set-cookie', clearRefreshCookie(config.refreshCookie));
+  };
 
   app.get('/health/live', async () => ({ status: 'ok', service: 'voa-financeiro-api' }));
   app.get('/health/ready', async (_request, reply) => {
@@ -125,7 +217,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows, limit, search };
   });
 
-  app.post('/api/v1/customers', { preHandler: requireAuthentication }, async (request, reply) => {
+  app.post('/api/v1/customers', { preHandler: requirePermission('catalog:write') }, async (request, reply) => {
     const parsed = customerSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid customer data', correlationId: request.id });
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
@@ -134,6 +226,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       VALUES ($1, $2, $3, $4)
       RETURNING id, full_name AS "fullName", document_number AS "documentNumber", email, phone, status, created_at AS "createdAt", updated_at AS "updatedAt"`,
       [fullName, documentNumber ?? null, email ?? null, phone ?? null]);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'customer.created',
+      actorId: actorIdOf(request),
+      entityType: 'customers',
+      entityId: String(result.rows[0]?.id ?? '')
+    });
     return reply.code(201).send(result.rows[0]);
   });
 
@@ -148,7 +246,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows, limit, search };
   });
 
-  app.post('/api/v1/schools', { preHandler: requireAuthentication }, async (request, reply) => {
+  app.post('/api/v1/schools', { preHandler: requirePermission('catalog:write') }, async (request, reply) => {
     const parsed = schoolSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid school data', correlationId: request.id });
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
@@ -157,6 +255,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       VALUES ($1, $2, $3)
       RETURNING id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
       [legalName, tradeName ?? null, documentNumber ?? null]);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'school.created',
+      actorId: actorIdOf(request),
+      entityType: 'schools',
+      entityId: String(result.rows[0]?.id ?? '')
+    });
     return reply.code(201).send(result.rows[0]);
   });
 
@@ -171,7 +275,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows, limit, search, schoolId: query.schoolId ?? null };
   });
 
-  app.post('/api/v1/students', { preHandler: requireAuthentication }, async (request, reply) => {
+  app.post('/api/v1/students', { preHandler: requirePermission('catalog:write') }, async (request, reply) => {
     const parsed = studentSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid student data', correlationId: request.id });
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
@@ -180,6 +284,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       VALUES ($1, $2, $3, $4, $5)
       RETURNING id, school_id AS "schoolId", customer_id AS "customerId", full_name AS "fullName", document_number AS "documentNumber", enrollment_number AS "enrollmentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
       [schoolId, customerId ?? null, fullName, documentNumber ?? null, enrollmentNumber ?? null]);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'student.created',
+      actorId: actorIdOf(request),
+      entityType: 'students',
+      entityId: String(result.rows[0]?.id ?? '')
+    });
     return reply.code(201).send(result.rows[0]);
   });
 
@@ -192,7 +302,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows };
   });
 
-  app.post('/api/v1/customers/:customerId/contacts', { preHandler: requireAuthentication }, async (request, reply) => {
+  app.post('/api/v1/customers/:customerId/contacts', { preHandler: requirePermission('catalog:write') }, async (request, reply) => {
     const { customerId } = request.params as { customerId: string };
     const parsed = contactSchema.safeParse({ ...(request.body as object), customerId });
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid contact data', correlationId: request.id });
@@ -202,6 +312,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       VALUES ($1, $2, $3, $4)
       RETURNING id, customer_id AS "customerId", type, value, is_primary AS "isPrimary", is_verified AS "isVerified", created_at AS "createdAt", updated_at AS "updatedAt"`,
       [customerId, type, value, isPrimary]);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'contact.created',
+      actorId: actorIdOf(request),
+      entityType: 'contacts',
+      entityId: String(result.rows[0]?.id ?? '')
+    });
     return reply.code(201).send(result.rows[0]);
   });
 
@@ -215,7 +331,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows, limit };
   });
 
-  app.post('/api/v1/agreements', { preHandler: requireAuthentication }, async (request, reply) => {
+  app.post('/api/v1/agreements', { preHandler: requirePermission('finance:write') }, async (request, reply) => {
     const parsed = agreementSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid agreement data', correlationId: request.id });
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
@@ -224,6 +340,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id, school_id AS "schoolId", customer_id AS "customerId", student_id AS "studentId", reference, total_amount AS "totalAmount", installments_count AS "installmentsCount", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
       [schoolId, customerId, studentId ?? null, reference ?? null, totalAmount, installmentsCount]);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'agreement.created',
+      actorId: actorIdOf(request),
+      entityType: 'agreements',
+      entityId: String(result.rows[0]?.id ?? '')
+    });
     return reply.code(201).send(result.rows[0]);
   });
 
@@ -237,7 +359,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows, limit };
   });
 
-  app.post('/api/v1/installments', { preHandler: requireAuthentication }, async (request, reply) => {
+  app.post('/api/v1/installments', { preHandler: requirePermission('finance:write') }, async (request, reply) => {
     const parsed = installmentSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid installment data', correlationId: request.id });
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
@@ -246,6 +368,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       VALUES ($1, $2, $3, $4)
       RETURNING id, agreement_id AS "agreementId", installment_number AS "installmentNumber", due_date AS "dueDate", original_amount AS "originalAmount", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
       [agreementId, installmentNumber, dueDate, originalAmount]);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'installment.created',
+      actorId: actorIdOf(request),
+      entityType: 'installments',
+      entityId: String(result.rows[0]?.id ?? '')
+    });
     return reply.code(201).send(result.rows[0]);
   });
 
@@ -259,7 +387,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows, limit };
   });
 
-  app.post('/api/v1/payments', { preHandler: requireAuthentication }, async (request, reply) => {
+  app.post('/api/v1/payments', { preHandler: requirePermission('finance:write') }, async (request, reply) => {
     const parsed = paymentSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid payment data', correlationId: request.id });
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
@@ -268,6 +396,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       VALUES ($1, $2, $3, 'paid', $4, $5)
       RETURNING id, installment_id AS "installmentId", amount, retained_amount AS "retainedAmount", released_amount AS "releasedAmount", paid_at AS "paidAt", status, source, external_id AS "externalId", created_at AS "createdAt", updated_at AS "updatedAt"`,
       [installmentId, amount, paidAt ? new Date(paidAt) : new Date(), source, externalId ?? null]);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'payment.created',
+      actorId: actorIdOf(request),
+      entityType: 'payments',
+      entityId: String(result.rows[0]?.id ?? '')
+    });
     return reply.code(201).send(result.rows[0]);
   });
 
@@ -306,37 +440,126 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
          GROUP BY u.id`, [parsed.data.email]);
     const user = result.rows[0];
     if (!user || !(await verifyPassword(parsed.data.password, user.password_hash))) {
+      await recordAudit(pool, request.log, request.id, {
+        action: 'auth.login.failed',
+        metadata: { email: parsed.data.email }
+      });
       return reply.code(401).send({ code: 'INVALID_CREDENTIALS', message: 'Invalid email or password', correlationId: request.id });
     }
 
-    const tokenId = randomUUID();
-    await pool.query(`INSERT INTO auth_sessions (user_id, token_id, expires_at)
-      VALUES ($1, $2, now() + interval '15 minutes')`, [user.id, tokenId]);
-    const accessToken = app.jwt.sign({ sub: user.id, sid: tokenId, name: user.display_name, roles: user.roles ?? [] });
-    return { accessToken, tokenType: 'Bearer', expiresIn: 900 };
+    const session = await issueSession(pool, user.id, user.display_name, user.roles ?? [], request.headers['user-agent']);
+    setRefreshCookie(reply, session.refreshToken);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'auth.login.succeeded',
+      actorId: user.id,
+      entityType: 'auth_session',
+      entityId: session.tokenId
+    });
+    return { accessToken: session.accessToken, tokenType: 'Bearer', expiresIn: ACCESS_TOKEN_TTL_SECONDS };
   });
 
-  app.post('/api/v1/auth/logout', { preHandler: async (request, reply) => {
+  /**
+   * Rotates the refresh token: the presented session is revoked and a new one is issued.
+   *
+   * A refresh token is single-use; replaying one that was already rotated, revoked or expired is
+   * refused with 401 and the cookie is cleared.
+   */
+  app.post('/api/v1/auth/refresh', async (request, reply) => {
+    if (!pool) {
+      return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Authentication is temporarily unavailable', correlationId: request.id });
+    }
+    const presented = readCookie(request.headers.cookie, config.refreshCookie.name);
+    if (!presented) {
+      clearRefresh(reply);
+      return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Refresh token missing', correlationId: request.id });
+    }
+
+    const client = await pool.connect();
     try {
-      await request.jwtVerify();
-    } catch {
-      return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Authentication required', correlationId: request.id });
+      await client.query('BEGIN');
+      const found = await client.query<{
+        token_id: string;
+        user_id: string;
+        display_name: string;
+        roles: string[] | null;
+      }>(`SELECT s.token_id, s.user_id, u.display_name,
+                 COALESCE(array_agg(r.name) FILTER (WHERE r.name IS NOT NULL), ARRAY[]::text[]) AS roles
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            LEFT JOIN user_roles ur ON ur.user_id = u.id
+            LEFT JOIN roles r ON r.id = ur.role_id
+           WHERE s.refresh_token_hash = $1
+             AND s.revoked_at IS NULL
+             AND s.refresh_expires_at > now()
+             AND u.is_active = true
+           GROUP BY s.id, s.token_id, s.user_id, u.display_name`,
+        [hashRefreshToken(presented, config.refreshSecret)]);
+      const current = found.rows[0];
+      const revoked = current
+        ? await client.query('UPDATE auth_sessions SET revoked_at = now() WHERE token_id = $1 AND revoked_at IS NULL', [current.token_id])
+        : null;
+      if (!current || revoked === null || revoked.rowCount === 0) {
+        await client.query('ROLLBACK');
+        clearRefresh(reply);
+        await recordAudit(pool, request.log, request.id, { action: 'auth.refresh.rejected' });
+        return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Refresh token is not valid anymore', correlationId: request.id });
+      }
+      const session = await issueSession(client, current.user_id, current.display_name, current.roles ?? [], request.headers['user-agent']);
+      await client.query('COMMIT');
+      setRefreshCookie(reply, session.refreshToken);
+      await recordAudit(pool, request.log, request.id, {
+        action: 'auth.refresh',
+        actorId: current.user_id,
+        entityType: 'auth_session',
+        entityId: session.tokenId,
+        metadata: { rotatedFrom: current.token_id }
+      });
+      return { accessToken: session.accessToken, tokenType: 'Bearer', expiresIn: ACCESS_TOKEN_TTL_SECONDS };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
-  } }, async (request, reply) => {
-    const sessionId = (request.user as { sid?: string }).sid;
-    if (pool && sessionId) {
-      await pool.query('UPDATE auth_sessions SET revoked_at = now() WHERE token_id = $1 AND revoked_at IS NULL', [sessionId]);
+  });
+
+  app.post('/api/v1/auth/logout', { preHandler: authenticate }, async (request, reply) => {
+    const claims = request.user as { sub?: string; sid?: string };
+    const refreshToken = readCookie(request.headers.cookie, config.refreshCookie.name);
+    if (pool) {
+      if (claims.sid) {
+        await pool.query('UPDATE auth_sessions SET revoked_at = now() WHERE token_id = $1 AND revoked_at IS NULL', [claims.sid]);
+      }
+      if (refreshToken) {
+        await pool.query('UPDATE auth_sessions SET revoked_at = now() WHERE refresh_token_hash = $1 AND revoked_at IS NULL', [
+          hashRefreshToken(refreshToken, config.refreshSecret)
+        ]);
+      }
     }
+    clearRefresh(reply);
+    await recordAudit(pool, request.log, request.id, {
+      action: 'auth.logout',
+      actorId: claims.sub || null,
+      entityType: 'auth_session',
+      entityId: claims.sid ?? null
+    });
     return reply.code(204).send();
   });
 
-  app.get('/api/v1/auth/me', { preHandler: async (request, reply) => {
-    try {
-      await request.jwtVerify();
-    } catch {
-      return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Authentication required', correlationId: request.id });
-    }
-  } }, async (request) => ({ user: request.user }));
+  app.get('/api/v1/auth/me', { preHandler: authenticate }, async (request) => ({ user: request.user }));
+
+  app.get('/api/v1/audit-logs', { preHandler: requirePermission('audit') }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const query = request.query as { action?: string; limit?: string };
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 200);
+    const action = query.action?.trim() ?? '';
+    const result = await pool.query(`SELECT id, action, entity_type AS "entityType", entity_id AS "entityId",
+        correlation_id AS "correlationId", metadata, created_at AS "createdAt"
+      FROM audit_logs
+      WHERE ($1 = '' OR action = $1)
+      ORDER BY created_at DESC LIMIT $2`, [action, limit]);
+    return { items: result.rows, limit, action };
+  });
   app.setNotFoundHandler((request, reply) => reply.code(404).send({ code: 'NOT_FOUND', message: 'Route not found', correlationId: request.id }));
   app.setErrorHandler((error, request, reply) => {
     request.log.error({ err: error }, 'request failed');

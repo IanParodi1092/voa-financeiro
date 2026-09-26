@@ -5,6 +5,13 @@ import { z } from 'zod';
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../../../.env') });
 
+/** `COOKIE_SECURE=true` (also accepts `1`, `yes`, `on`); anything else means a plain cookie. */
+const booleanish = (defaultValue: boolean) =>
+  z.preprocess((value) => {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+  }, z.boolean());
+
 const environmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -14,6 +21,9 @@ const environmentSchema = z.object({
   DATABASE_URL: z.string().min(1),
   DIRECT_DATABASE_URL: z.string().min(1).optional(),
   AUTH_JWT_SECRET: z.string().min(32),
+  AUTH_REFRESH_SECRET: z.string().min(32).optional(),
+  COOKIE_DOMAIN: z.preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional()),
+  COOKIE_SECURE: booleanish(false),
   ASAAS_ENVIRONMENT: z.enum(['sandbox', 'production']).default('sandbox'),
   ASAAS_WEBHOOK_TOKEN: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
@@ -22,9 +32,25 @@ const environmentSchema = z.object({
   WEBHOOK_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(5)
 });
 
-export type AppConfig = z.infer<typeof environmentSchema> & { corsOrigins: string[] };
+export interface RefreshCookieConfig {
+  name: string;
+  secure: boolean;
+  domain?: string | undefined;
+}
+
+export type AppConfig = z.infer<typeof environmentSchema> & {
+  corsOrigins: string[];
+  /** Keyed hash of the refresh token; falls back to `AUTH_JWT_SECRET` when not configured. */
+  refreshSecret: string;
+  refreshCookie: RefreshCookieConfig;
+};
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = environmentSchema.parse(env);
-  return { ...parsed, corsOrigins: parsed.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean) };
+  return {
+    ...parsed,
+    corsOrigins: parsed.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean),
+    refreshSecret: parsed.AUTH_REFRESH_SECRET ?? parsed.AUTH_JWT_SECRET,
+    refreshCookie: { name: 'voa_refresh', secure: parsed.COOKIE_SECURE, domain: parsed.COOKIE_DOMAIN }
+  };
 }

@@ -18,6 +18,7 @@ Nenhuma credencial real, dado legado ou chamada a Asaas/ChatGuru/Supabase remoto
 - `npm run typecheck`
 - `npm test`
 - `npm run build`
+- `npm run test:integration` (testes de auth/RBAC; exigem `TEST_DATABASE_URL`, ver `docs/LOCAL_DEVELOPMENT.md`; sem ela o bloco e ignorado)
 - `npm run test:python` (scripts de migracao; requer `scripts/requirements.txt`)
 
 ## Migracao do legado
@@ -35,3 +36,5 @@ Nenhuma credencial real, dado legado ou chamada a Asaas/ChatGuru/Supabase remoto
 ## Proximos passos
 
 Implementar autenticacao/RBAC e o schema de dominio por fases, adicionar testes de integracao com PostgreSQL descartavel, e somente depois conectar adaptadores Asaas, ChatGuru e SMTP usando segredos por ambiente.
+
+Situacao em 2026-09-26: autenticacao com rotacao de refresh, RBAC por permissao, trilha em `audit_logs` e os testes de integracao com PostgreSQL descartavel (`npm run test:integration` com `TEST_DATABASE_URL`) estao implementados; rotas e permissoes em `docs/API_ROUTES.md`, preparo do banco de teste em `docs/LOCAL_DEVELOPMENT.md`. O que falta: os contratos `PATCH`, a automacao das rotas de migracao e a carga canonica no Supabase, que segue somente-leitura por cota de disco (`docs/MIGRATION_WORKFLOW.md`).
