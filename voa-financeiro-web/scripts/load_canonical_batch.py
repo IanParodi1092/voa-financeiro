@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -73,8 +74,11 @@ from build_field_dictionary import (  # noqa: E402
 )
 from stage_legacy_workbook import (  # noqa: E402
     CANONICAL_TABLES,
+    STAGING_URL_ENV,
     chunked,
     connect,
+    database_url,
+    describe_database_url,
     load_env,
     write_text_file,
 )
@@ -82,6 +86,21 @@ from stage_legacy_workbook import (  # noqa: E402
 DEFAULT_REPORT = Path(__file__).resolve().parents[1] / "docs" / "CANONICAL_LOAD_REPORT.md"
 DEFAULT_LEGACY_SOURCE = "powerapps-voa"
 DEFAULT_BATCH_PAGE = 5000
+
+
+def resolve_database_urls(staging_url: str | None = None) -> tuple[str, str]:
+    """Return `(staging_url, canonical_url)` for a run.
+
+    The canonical URL always comes from `DIRECT_DATABASE_URL`/`DATABASE_URL`. The staging URL comes
+    from `--staging-url`, then `STAGING_DATABASE_URL`, then the canonical URL - the fallback keeps
+    the historical single-database behaviour. When the two differ, `migration_rows` is read from the
+    staging database while the canonical rows are written to Supabase.
+    """
+    canonical = (database_url(prefer_staging=False) or "").strip()
+    if not canonical:
+        raise StagingError("DATABASE_URL or DIRECT_DATABASE_URL is required")
+    staging = (staging_url or "").strip() or (os.environ.get(STAGING_URL_ENV) or "").strip() or canonical
+    return staging, canonical
 
 LOADER_ERROR_CODES = (
     "LOAD_REQUIRED_FIELD_EMPTY",
@@ -1652,6 +1671,7 @@ def compute_aggregates(
 
 def process_sheet(
     cursor: Any,
+    staging_cursor: Any,
     sheet: str,
     entry: dict[str, Any],
     plan: dict[str, TablePlan],
@@ -1687,7 +1707,7 @@ def process_sheet(
             if remaining <= 0:
                 break
             limit = min(page, remaining)
-        cursor.execute(
+        staging_cursor.execute(
             """
             SELECT id, source_row_number, payload, status
               FROM migration_rows
@@ -1697,7 +1717,7 @@ def process_sheet(
             """,
             (state.batch_id, sheet, last_row, limit),
         )
-        batch = cursor.fetchall()
+        batch = staging_cursor.fetchall()
         if not batch:
             break
         for row_id, row_number, payload, row_status in batch:
@@ -2000,10 +2020,33 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     }
 
     load_env()
-    connection = connect()
+    staging_url, canonical_url = resolve_database_urls(getattr(args, "staging_url", None))
+    split_databases = staging_url != canonical_url
+    connection = connect(canonical_url)
+    try:
+        staging_connection = connect(staging_url) if split_databases else None
+    except Exception:
+        connection.close()
+        raise
+    result["database"] = {
+        "staging": describe_database_url(staging_url),
+        "canonical": describe_database_url(canonical_url),
+        "split": split_databases,
+    }
+    print(
+        json.dumps(
+            {
+                "staging": result["database"]["staging"],
+                "canonical": result["database"]["canonical"],
+                "split": split_databases,
+            }
+        ),
+        flush=True,
+    )
     try:
         cursor = connection.cursor()
-        batch = find_batch(cursor, dictionary, args)
+        staging_cursor = staging_connection.cursor() if staging_connection else cursor
+        batch = find_batch(staging_cursor, dictionary, args)
         state = LoadState(legacy_source=legacy_source, batch_id=batch["id"], commit=args.commit)
         state.unique_groups = unique_groups
         counts_tables = canonical_tables_for_counts(plan)
@@ -2013,7 +2056,7 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
         preload_existing(cursor, plan, schema, legacy_source, state)
         preload_unique_keys(cursor, plan, state)
-        aggregates, aggregate_report = compute_aggregates(cursor, plan, state)
+        aggregates, aggregate_report = compute_aggregates(staging_cursor, plan, state)
         result["aggregates"] = aggregate_report
         for source_sheet, information in sorted(aggregate_report.items()):
             groups = ", ".join(f"{target}={count}" for target, count in sorted(information["groups"].items()))
@@ -2027,7 +2070,7 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             entry = sheet_plan[sheet]
             ready_tables = [table for table in entry.get("tables", []) if plan[table].status == "ready"]
             if not ready_tables:
-                staged = staged_rows(cursor, state.batch_id, sheet)
+                staged = staged_rows(staging_cursor, state.batch_id, sheet)
                 result["sheets"].append(
                     {
                         "sheet": sheet,
@@ -2039,7 +2082,9 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     }
                 )
                 continue
-            counters = process_sheet(cursor, sheet, entry, plan, schema, defaults, aggregates, state, args)
+            counters = process_sheet(
+                cursor, staging_cursor, sheet, entry, plan, schema, defaults, aggregates, state, args
+            )
             result["sheets"].append(counters)
             print(
                 f"  {sheet}: rows={counters['rows']} loaded={counters['rows_loaded']} "
@@ -2078,18 +2123,30 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         result["rows_marked_committed"] = len(state.committed_row_ids)
 
         if state.commit:
-            result["findings_persisted"] = persist_findings(cursor, state)
-            result["rows_updated"] = persist_row_status(cursor, state)
-            persist_reconciliation(cursor, state, plan, sheet_plan, counts_after, allow_proposed, batch)
-            persist_batch_status(cursor, state, args.set_batch_status)
+            result["findings_persisted"] = persist_findings(staging_cursor, state)
+            result["rows_updated"] = persist_row_status(staging_cursor, state)
+            persist_reconciliation(
+                staging_cursor, state, plan, sheet_plan, counts_after, allow_proposed, batch
+            )
+            persist_batch_status(staging_cursor, state, args.set_batch_status)
             connection.commit()
+            if staging_connection is not None:
+                # Bancos separados: o canonico commita primeiro (a carga e idempotente por
+                # `legacy_id`), e so depois os achados/reconciliacao do lote vao para o staging.
+                staging_connection.commit()
         else:
             connection.rollback()
+            if staging_connection is not None:
+                staging_connection.rollback()
     except Exception:
         connection.rollback()
+        if staging_connection is not None:
+            staging_connection.rollback()
         raise
     finally:
         connection.close()
+        if staging_connection is not None:
+            staging_connection.close()
 
     result["summary"] = summarize(result)
     result["exit_code"] = 4 if blocked else 0
@@ -2116,27 +2173,38 @@ def render_report(result: dict[str, Any]) -> str:
     """Markdown report written straight to disk as UTF-8 (never through shell redirection)."""
     summary = result["summary"]
     batch = result.get("batch", {})
+    database = result.get("database", {})
     lines: list[str] = []
     lines.append("# Carga canonica do legado (fase 7)")
     lines.append("")
     lines.append("Gerado por `scripts/load_canonical_batch.py` a partir do dicionario ")
     lines.append("`scripts/legacy_field_map.json` e do lote de staging aprovado.")
     lines.append("")
-    lines.append(
-        "| Metrica | Valor |\n|---|---:|\n"
-        f"| Modo | {result['mode']} |\n"
-        f"| Lote | `{batch.get('id', 'n/a')}` ({batch.get('source_name', 'n/a')}, status {batch.get('status', 'n/a')}) |\n"
-        f"| Fonte legada | `{result['legacy_source']}` |\n"
-        f"| Entidades prontas | {summary['ready_tables']} |\n"
-        f"| Entidades bloqueadas | {summary['blocked_tables']} |\n"
-        f"| Linhas legadas avaliadas | {summary['rows_considered']} |\n"
-        f"| Linhas carregadas | {summary['rows_loaded']} |\n"
-        f"| Linhas novas | {summary['rows_inserted']} |\n"
-        f"| Linhas reutilizadas (idempotencia) | {summary['rows_reused']} |\n"
-        f"| Linhas descartadas | {summary['rows_skipped']} |\n"
-        f"| Achados registrados | {summary['findings']} |\n"
-        f"| Escrita canonica nesta rodada | {'sim' if summary['canonical_writes'] else 'nao'} |"
+    metrics = [
+        "| Metrica | Valor |",
+        "|---|---:|",
+        f"| Modo | {result['mode']} |",
+        f"| Lote | `{batch.get('id', 'n/a')}` "
+        f"({batch.get('source_name', 'n/a')}, status {batch.get('status', 'n/a')}) |",
+        f"| Fonte legada | `{result['legacy_source']}` |",
+    ]
+    if database:
+        metrics.append(f"| Staging | `{database.get('staging', 'n/a')}` |")
+        metrics.append(f"| Canonico | `{database.get('canonical', 'n/a')}` |")
+    metrics.extend(
+        [
+            f"| Entidades prontas | {summary['ready_tables']} |",
+            f"| Entidades bloqueadas | {summary['blocked_tables']} |",
+            f"| Linhas legadas avaliadas | {summary['rows_considered']} |",
+            f"| Linhas carregadas | {summary['rows_loaded']} |",
+            f"| Linhas novas | {summary['rows_inserted']} |",
+            f"| Linhas reutilizadas (idempotencia) | {summary['rows_reused']} |",
+            f"| Linhas descartadas | {summary['rows_skipped']} |",
+            f"| Achados registrados | {summary['findings']} |",
+            f"| Escrita canonica nesta rodada | {'sim' if summary['canonical_writes'] else 'nao'} |",
+        ]
     )
+    lines.append("\n".join(metrics))
     lines.append("")
 
     lines.append("## Plano por entidade canonica")
@@ -2270,6 +2338,15 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--json-out", dest="json_out", type=Path, default=None)
     parser.add_argument("--no-report", action="store_true", help="do not write the markdown report")
     parser.add_argument("--batch-id", default=None, help="load a specific migration_batches row")
+    parser.add_argument(
+        "--staging-url",
+        default=None,
+        help=(
+            "database that holds migration_rows/migration_batches (default: STAGING_DATABASE_URL, "
+            "then DIRECT_DATABASE_URL/DATABASE_URL); the canonical rows always go to "
+            "DIRECT_DATABASE_URL/DATABASE_URL"
+        ),
+    )
     parser.add_argument("--entities", default=None, help="comma-separated canonical tables to load")
     parser.add_argument(
         "--allow-proposed",

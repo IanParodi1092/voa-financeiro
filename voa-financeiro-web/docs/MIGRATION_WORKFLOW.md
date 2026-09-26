@@ -6,7 +6,7 @@
 - O importador dry-run grava somente `migration_batches`, `migration_rows`, `migration_errors` e `reconciliation_reports`.
 - Nenhuma escola, cliente, aluno, acordo, parcela, pagamento ou cobranca canonica e criada nesse modo.
 - Senhas, API keys e tokens sao substituidos por `[REDACTED]` antes de persistir o payload.
-- O lote completo `VOA.xlsx` (419.700 linhas em 39 abas) esta em staging e ja passou por validacao. A revisao de 2026-09-25 20:01 do arquivo tem **60 abas e 546.346 linhas de dados**; o staging dela foi tentado em 2026-09-25 21:33 e **abortou por falta de disco no Supabase** (o projeto entrou em somente-leitura e a tentativa foi desfeita por inteiro - ver "Incidente de disco no staging"). Ate esse staging rodar, o `db:field-dictionary-check` continua mostrando os numeros do lote antigo, inclusive 19 `empty_sheet` (informativo, nao derruba o gate).
+- O lote completo `VOA.xlsx` (419.700 linhas em 39 abas) esta em staging e ja passou por validacao. A revisao de 2026-09-25 20:01 do arquivo tem **60 abas e 546.346 linhas de dados**; o staging dela foi tentado em 2026-09-25 21:33 e **abortou por falta de disco no Supabase** (o projeto entrou em somente-leitura e a tentativa foi desfeita por inteiro - ver "Incidente de disco no staging"). O caminho escolhido pelo operador foi estagiar no Postgres local mantendo o canonico no Supabase (ver "Staging local + canonico no Supabase"). Ate esse staging rodar, o `db:field-dictionary-check` continua mostrando os numeros do lote antigo, inclusive 19 `empty_sheet` (informativo, nao derruba o gate).
 - A validacao registra achados por aba/campo, marca linhas com erro e atualiza `reconciliation_reports`.
 - O relatorio consolidado da ultima validacao esta em `docs/STAGING_VALIDATION_REPORT.md`.
 - O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 30 `map`, 76 `ignore`, 713 `defer` e 37 `review`.
@@ -339,10 +339,66 @@ Caminhos para destravar (decisao do operador):
    linhas) e, so depois da revisao nova validada, decidir sobre o lote antigo `5cd769e4-...`
    (419.700 linhas, ~880 MB) - a rastreabilidade canonica sobrevive em `legacy_id`/`legacy_table`,
    mas o payload de auditoria daquela revisao se perde;
-4. alternativa sem upgrade: estagiar e validar em Postgres local e enviar ao Supabase somente as
-   tabelas canonicas (~35 MB). Isso exige uma flag `--staging-url` no
-   `scripts/load_canonical_batch.py`, para que a leitura de `migration_rows` e a escrita canonica
-   usem conexoes diferentes.
+4. **escolhido pelo operador em 2026-09-25**: estagiar e validar em Postgres local e enviar ao
+   Supabase somente as tabelas canonicas (~35 MB). Isso ja esta implementado: `--staging-url` no
+   `scripts/load_canonical_batch.py` e `STAGING_DATABASE_URL` no stager, no validador e no dicionario;
+   o passo a passo esta em "Staging local + canonico no Supabase".
+
+## Staging local + canonico no Supabase (caminho escolhido em 2026-09-25)
+
+O staging da revisao nova nao cabe no disco do Supabase (~1,25 GB de payload contra ~1 GB de cota),
+entao a topologia passou a ter dois bancos:
+
+- **staging** (`STAGING_DATABASE_URL`): `migration_batches`, `migration_rows`, `migration_errors` e
+  `reconciliation_reports`. Roda no Postgres local (nao consome cota e e descartavel);
+- **canonico** (`DIRECT_DATABASE_URL`/`DATABASE_URL`): as tabelas de dominio no Supabase (~35 MB).
+
+Preparo do banco local (uma vez por maquina, com o PG local ouvindo em `5433`):
+
+```powershell
+# 1. cria o banco de staging (pede a senha do usuario postgres local)
+& "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -p 5433 -U postgres `
+  -c "CREATE DATABASE voa_staging"
+
+# 2. aplica as migrations 0001..0006 NO LOCAL (o runner prioriza DIRECT_DATABASE_URL)
+$env:DIRECT_DATABASE_URL = "postgresql://postgres:SENHA@localhost:5433/voa_staging"
+$env:DATABASE_URL = $env:DIRECT_DATABASE_URL
+npm run db:migrate
+```
+
+Cadeia de staging local com o canonico no Supabase:
+
+```powershell
+# o .env (Supabase) continua sendo a fonte do canonico; o staging vai por variavel de ambiente
+$env:STAGING_DATABASE_URL = "postgresql://postgres:SENHA@localhost:5433/voa_staging"
+
+python scripts\stage_legacy_workbook.py --json-out "$env:TEMP\voa_stage.json"       # grava no local
+python scripts\validate_staging_batch.py --report docs\STAGING_VALIDATION_REPORT.md
+python scripts\build_field_dictionary.py --from-staging --gate approved
+python scripts\load_canonical_batch.py --entities schools,students,customers,contacts,agreements,asaas_customers,installments,payments --commit --json-out "$env:TEMP\voa_commit.json"
+```
+
+Como as duas conexoes funcionam:
+
+- `stage_legacy_workbook.py`, `validate_staging_batch.py` e `build_field_dictionary.py --from-staging`
+  usam `STAGING_DATABASE_URL` quando ela existe (senao `DIRECT_DATABASE_URL`/`DATABASE_URL`), atraves
+  do `connect()` de `scripts/stage_legacy_workbook.py`;
+- `load_canonical_batch.py` aceita **`--staging-url`** (vence a variavel de ambiente) e grava o
+  canonico sempre no `DIRECT_DATABASE_URL`/`DATABASE_URL`: as leituras de `migration_rows` e as
+  gravacoes de achados/reconciliacao do lote vao para o staging, e as insercoes de dominio vao para o
+  Supabase. Nessa rodada o canonico commita primeiro e o staging depois (a carga e idempotente por
+  `legacy_id`, entao repetir a rodada reutiliza as linhas em vez de duplicar);
+- `resolve_database_urls()` decide isso em um unico lugar e esta coberto por testes
+  (`DatabaseRoutingTests` em `scripts/test_load_canonical_batch.py`);
+- sem `STAGING_DATABASE_URL` e sem `--staging-url` **nada muda**: as duas conexoes apontam para o
+  mesmo banco e o comportamento e o historico (uma transacao, um commit);
+- o relatorio da carga passa a registrar `| Staging | host:porta/banco |` e
+  `| Canonico | host:porta/banco |` (sem credenciais), para deixar em qual banco a rodada leu e gravou.
+
+Efeito colateral aceito: o `snapshot_canonical_counts` do validador passa a olhar as tabelas canonicas
+do banco de staging (vazias no local). Ele existe para provar que a validacao nao toca no canonico, e a
+prova continua valida - quem grava o canonico e o `load_canonical_batch.py`, com o `connect()` do
+canonico.
 
 ## Pendencias de entrada ainda abertas
 

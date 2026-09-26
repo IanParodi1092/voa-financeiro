@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 import unittest
 import uuid
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -23,10 +25,12 @@ from load_canonical_batch import (  # noqa: E402
     canonical_tables_for_counts,
     compute_aggregates,
     convert_value,
+    describe_database_url,
     find_batch,
     insert_canonical,
     load_dictionary,
     normalize_key,
+    parse_arguments,
     parse_canonical_columns,
     parse_date_value,
     parse_money,
@@ -39,6 +43,7 @@ from load_canonical_batch import (  # noqa: E402
     remember_unique_keys,
     render_report,
     required_columns,
+    resolve_database_urls,
     resolve_defaults,
     row_uuid,
     sheet_order,
@@ -1373,6 +1378,7 @@ class CustomerSynthesisTests(unittest.TestCase):
         )
         counters = process_sheet(
             cursor,
+            cursor,
             "SHEET_AGREEMENT",
             entry,
             self.plan,
@@ -1406,6 +1412,7 @@ class CustomerSynthesisTests(unittest.TestCase):
             "agreements.installments_count": {"7": 2},
         }
         counters = process_sheet(
+            cursor,
             cursor,
             "SHEET_AGREEMENT",
             entry,
@@ -1636,6 +1643,84 @@ class ReportTests(unittest.TestCase):
         tables = canonical_tables_for_counts(plan)
         self.assertIn("contacts", tables)
         self.assertIn("schools", tables)
+
+
+class DatabaseRoutingTests(unittest.TestCase):
+    """`--staging-url`/`STAGING_DATABASE_URL`: staging reads and canonical writes may split."""
+
+    CANONICAL = "postgresql://postgres:secret@db.tiifccrnvniziyixxaqbq.supabase.co:5432/postgres"
+    STAGING = "postgresql://postgres:local@localhost:5433/voa_staging"
+
+    def test_single_database_is_the_default(self) -> None:
+        with mock.patch.dict(os.environ, {"DIRECT_DATABASE_URL": self.CANONICAL}, clear=True):
+            staging, canonical = resolve_database_urls()
+        self.assertEqual(staging, self.CANONICAL)
+        self.assertEqual(canonical, self.CANONICAL)
+
+    def test_staging_env_var_splits_the_run(self) -> None:
+        env = {"DIRECT_DATABASE_URL": self.CANONICAL, "STAGING_DATABASE_URL": self.STAGING}
+        with mock.patch.dict(os.environ, env, clear=True):
+            staging, canonical = resolve_database_urls()
+        self.assertEqual(staging, self.STAGING)
+        self.assertEqual(canonical, self.CANONICAL)
+
+    def test_staging_flag_overrides_the_env_var(self) -> None:
+        env = {"DIRECT_DATABASE_URL": self.CANONICAL, "STAGING_DATABASE_URL": self.STAGING}
+        with mock.patch.dict(os.environ, env, clear=True):
+            staging, canonical = resolve_database_urls("postgresql://localhost:5433/outro")
+        self.assertEqual(staging, "postgresql://localhost:5433/outro")
+        self.assertEqual(canonical, self.CANONICAL)
+
+    def test_staging_flag_replaces_the_env_fallback(self) -> None:
+        with mock.patch.dict(os.environ, {"DATABASE_URL": self.CANONICAL}, clear=True):
+            staging, canonical = resolve_database_urls()
+        self.assertEqual(staging, self.CANONICAL)
+        self.assertEqual(canonical, self.CANONICAL)
+
+    def test_canonical_url_is_required(self) -> None:
+        with mock.patch.dict(os.environ, {"STAGING_DATABASE_URL": self.STAGING}, clear=True):
+            with self.assertRaises(StagingError):
+                resolve_database_urls()
+
+    def test_flag_argument_exists_in_the_cli(self) -> None:
+        with mock.patch.dict(os.environ, {"DATABASE_URL": self.CANONICAL}, clear=True):
+            args = parse_arguments(["--staging-url", self.STAGING, "--commit"])
+        self.assertEqual(args.staging_url, self.STAGING)
+        self.assertTrue(args.commit)
+
+    def test_describe_hides_credentials(self) -> None:
+        self.assertEqual(describe_database_url(self.CANONICAL), "db.tiifccrnvniziyixxaqbq.supabase.co:5432/postgres")
+        self.assertEqual(describe_database_url(self.STAGING), "localhost:5433/voa_staging")
+        self.assertEqual(describe_database_url(None), "<unset>")
+
+    def test_report_shows_both_databases(self) -> None:
+        result = {
+            "mode": "dry-run",
+            "legacy_source": "powerapps-voa",
+            "canonical_writes": False,
+            "batch": {"id": "5cd769e4", "source_name": "VOA.xlsx", "status": "staging"},
+            "database": {"staging": "localhost:5433/voa_staging", "canonical": "localhost:5432/postgres", "split": True},
+            "summary": {
+                "ready_tables": 1,
+                "blocked_tables": 0,
+                "rows_considered": 0,
+                "rows_loaded": 0,
+                "rows_inserted": 0,
+                "rows_reused": 0,
+                "rows_skipped": 0,
+                "findings": 0,
+                "canonical_writes": False,
+            },
+            "tables": {},
+            "models": {"ready": [], "blocked": []},
+            "plan": {},
+            "sheets": [],
+            "aggregates": {},
+            "findings": [],
+        }
+        report = render_report(result)
+        self.assertIn("| Staging | `localhost:5433/voa_staging` |", report)
+        self.assertIn("| Canonico | `localhost:5432/postgres` |", report)
 
 
 if __name__ == "__main__":

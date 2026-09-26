@@ -11,6 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 import openpyxl
 import psycopg
@@ -20,6 +21,7 @@ SENSITIVE_NAME_PARTS = ("senha", "apikey", "api_key", "token", "secret", "passwo
 CANONICAL_TABLES = ("schools", "customers", "students", "agreements", "installments", "payments", "asaas_charges")
 DEFAULT_WORKBOOK = Path(__file__).resolve().parents[2] / "_legacy-powerapps" / "root-exports" / "VOA.xlsx"
 DEFAULT_PAGE_SIZE = 500
+STAGING_URL_ENV = "STAGING_DATABASE_URL"
 
 
 def configure_stdio() -> None:
@@ -486,11 +488,45 @@ def persist_staging(connection: Any, workbook_path: Path, sheet_names: set[str] 
         raise
 
 
-def connect() -> Any:
-    database_url = os.environ.get("DIRECT_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL or DIRECT_DATABASE_URL is required")
-    return psycopg.connect(database_url)
+def database_url(prefer_staging: bool = True) -> str | None:
+    """Resolve the connection string used by the migration scripts.
+
+    With `prefer_staging` (the default, used by the stager/validator/dictionary) `STAGING_DATABASE_URL`
+    wins when it is set, so the staging tables can live in a local Postgres while the canonical
+    tables stay in Supabase - see "Staging local + canonico no Supabase" in docs/MIGRATION_WORKFLOW.md.
+    `prefer_staging=False` always resolves the canonical database.
+    """
+    names = (
+        (STAGING_URL_ENV, "DIRECT_DATABASE_URL", "DATABASE_URL")
+        if prefer_staging
+        else ("DIRECT_DATABASE_URL", "DATABASE_URL")
+    )
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def describe_database_url(url: str | None) -> str:
+    """`host:port/database` without credentials, safe for logs and reports."""
+    text = (url or "").strip()
+    if not text:
+        return "<unset>"
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return "<invalid>"
+    if not parsed.hostname:
+        return "<local socket>"
+    return f"{parsed.hostname}:{parsed.port or 5432}{parsed.path}"
+
+
+def connect(url: str | None = None) -> Any:
+    resolved = (url or "").strip() or database_url()
+    if not resolved:
+        raise RuntimeError(f"{STAGING_URL_ENV}, DATABASE_URL or DIRECT_DATABASE_URL is required")
+    return psycopg.connect(resolved)
 
 
 def main() -> None:
@@ -539,7 +575,8 @@ def main() -> None:
         return
 
     load_env()
-    connection = connect()
+    staging_url = database_url()
+    connection = connect(staging_url)
     try:
         persisted = persist_staging(connection, workbook_path, sheet_names, args.max_rows_per_sheet)
         connection.commit()
@@ -547,6 +584,7 @@ def main() -> None:
             "source_name": persisted.get("source_name", workbook_path.name),
             "source_hash": persisted.get("source_hash", hash_file(workbook_path)),
             "mode": "staging",
+            "staging_target": describe_database_url(staging_url),
             "canonical_writes": False,
             "batch_id": persisted["batch_id"],
             "status": persisted["status"],
