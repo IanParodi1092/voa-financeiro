@@ -1,0 +1,25 @@
+{
+  "name": "voa-financeiro-web",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:api": "npm --workspace apps/api run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "db:migrate": "npm --workspace apps/api run db:migrate",
+    "db:stage-dry-run": "python scripts/stage_legacy_workbook.py",
+    "db:validate-staging": "python scripts/validate_staging_batch.py",
+    "db:validate-staging-dry-run": "python scripts/validate_staging_batch.py --dry-run",
+    "db:profile-legacy": "python scripts/profile_legacy_workbook.py",
+    "db:field-dictionary": "python scripts/build_field_dictionary.py",
+    "db:field-dictionary-check": "python scripts/build_field_dictionary.py --from-staging --gate approved",
+    "db:load-canonical": "python scripts/load_canonical_batch.py",
+    "db:load-canonical-commit": "python scripts/load_canonical_batch.py --commit",
+    "db:audit-app-sources": "python scripts/audit_legacy_app_sources.py",
+    "test:python": "python -m unittest discover -s scripts -p \"test_*.py\""
+  },
+  "engines": { "node": ">=20" }
+}

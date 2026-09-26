@@ -1,0 +1,347 @@
+import Fastify, { type FastifyInstance } from 'fastify';
+import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import jwt from '@fastify/jwt';
+import type { Pool } from 'pg';
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import type { AppConfig } from './config.js';
+import { verifyPassword } from './auth/password.js';
+
+const loginSchema = z.object({
+  email: z.string().email().transform((value) => value.toLowerCase()),
+  password: z.string().min(1)
+});
+
+const customerSchema = z.object({
+  fullName: z.string().trim().min(2).max(200),
+  documentNumber: z.string().trim().max(30).optional(),
+  email: z.string().email().transform((value) => value.toLowerCase()).optional(),
+  phone: z.string().trim().max(30).optional()
+});
+
+const schoolSchema = z.object({
+  legalName: z.string().trim().min(2).max(200),
+  tradeName: z.string().trim().max(200).optional(),
+  documentNumber: z.string().trim().max(30).optional()
+});
+
+const contactSchema = z.object({
+  customerId: z.string().uuid(),
+  type: z.enum(['email', 'phone', 'whatsapp', 'other']),
+  value: z.string().trim().min(1).max(200),
+  isPrimary: z.boolean().default(false)
+});
+
+const studentSchema = z.object({
+  schoolId: z.string().uuid(),
+  customerId: z.string().uuid().optional(),
+  fullName: z.string().trim().min(2).max(200),
+  documentNumber: z.string().trim().max(30).optional(),
+  enrollmentNumber: z.string().trim().max(50).optional()
+});
+
+const agreementSchema = z.object({
+  schoolId: z.string().uuid(),
+  customerId: z.string().uuid(),
+  studentId: z.string().uuid().optional(),
+  reference: z.string().trim().max(200).optional(),
+  totalAmount: z.number().nonnegative(),
+  installmentsCount: z.number().int().positive().max(120)
+});
+
+const installmentSchema = z.object({
+  agreementId: z.string().uuid(),
+  installmentNumber: z.number().int().positive(),
+  dueDate: z.string().date(),
+  originalAmount: z.number().nonnegative()
+});
+
+const paymentSchema = z.object({
+  installmentId: z.string().uuid(),
+  amount: z.number().positive(),
+  paidAt: z.string().datetime().optional(),
+  source: z.enum(['manual', 'asaas', 'bank_transfer', 'other']).default('manual'),
+  externalId: z.string().trim().max(200).optional()
+});
+
+async function requireAuthentication(request: Parameters<NonNullable<FastifyInstance['addHook']>>[1] extends never ? never : any, reply: any) {
+  try {
+    await request.jwtVerify();
+  } catch {
+    return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Authentication required', correlationId: request.id });
+  }
+}
+
+export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
+  const app = Fastify({ logger: { level: config.LOG_LEVEL }, genReqId: () => randomUUID() });
+  app.register(helmet);
+  app.register(cors, { origin: config.corsOrigins });
+  app.register(rateLimit, { max: config.RATE_LIMIT_MAX, timeWindow: '1 minute' });
+  app.register(jwt, { secret: config.AUTH_JWT_SECRET, sign: { expiresIn: '15m' } });
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('x-correlation-id', request.id);
+  });
+
+  app.get('/health/live', async () => ({ status: 'ok', service: 'voa-financeiro-api' }));
+  app.get('/health/ready', async (_request, reply) => {
+    if (!pool) return { status: 'ok', database: 'not-configured' };
+    try {
+      await pool.query('SELECT 1');
+      return { status: 'ok', database: 'up' };
+    } catch {
+      return reply.code(503).send({ status: 'degraded', database: 'down' });
+    }
+  });
+
+  app.get('/api/v1', async () => ({ name: 'VOA Financeiro API', version: 'v1' }));
+  app.post('/api/v1/webhooks/asaas', async (request, reply) => {
+    const providedToken = request.headers['asaas-access-token'];
+    if (!config.ASAAS_WEBHOOK_TOKEN || typeof providedToken !== 'string' || providedToken !== config.ASAAS_WEBHOOK_TOKEN) {
+      return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Invalid webhook credentials', correlationId: request.id });
+    }
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const payload = request.body as Record<string, unknown>;
+    const eventId = typeof payload.id === 'string' ? payload.id : request.id;
+    const eventType = typeof payload.event === 'string' ? payload.event : 'unknown';
+    const externalChargeId = typeof payload.payment === 'object' && payload.payment !== null && 'id' in payload.payment && typeof payload.payment.id === 'string'
+      ? payload.payment.id : null;
+    const result = await pool.query(`INSERT INTO asaas_events (external_event_id, environment, event_type, external_charge_id, payload)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (external_event_id) DO NOTHING
+      RETURNING id`, [eventId, config.ASAAS_ENVIRONMENT, eventType, externalChargeId, payload]);
+    return reply.code(202).send({ accepted: true, duplicate: result.rowCount === 0 });
+  });
+
+  app.get('/api/v1/customers', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const query = request.query as { search?: string; limit?: string };
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 100);
+    const search = query.search?.trim() ?? '';
+    const result = await pool.query(`SELECT id, full_name AS "fullName", document_number AS "documentNumber", email, phone, status, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM customers WHERE deleted_at IS NULL AND ($1 = '' OR full_name ILIKE $2 OR document_number ILIKE $2 OR email ILIKE $2)
+      ORDER BY full_name LIMIT $3`, [search, `%${search}%`, limit]);
+    return { items: result.rows, limit, search };
+  });
+
+  app.post('/api/v1/customers', { preHandler: requireAuthentication }, async (request, reply) => {
+    const parsed = customerSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid customer data', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { fullName, documentNumber, email, phone } = parsed.data;
+    const result = await pool.query(`INSERT INTO customers (full_name, document_number, email, phone)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, full_name AS "fullName", document_number AS "documentNumber", email, phone, status, created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [fullName, documentNumber ?? null, email ?? null, phone ?? null]);
+    return reply.code(201).send(result.rows[0]);
+  });
+
+  app.get('/api/v1/schools', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const query = request.query as { search?: string; limit?: string };
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 100);
+    const search = query.search?.trim() ?? '';
+    const result = await pool.query(`SELECT id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM schools WHERE deleted_at IS NULL AND ($1 = '' OR legal_name ILIKE $2 OR trade_name ILIKE $2 OR document_number ILIKE $2)
+      ORDER BY legal_name LIMIT $3`, [search, `%${search}%`, limit]);
+    return { items: result.rows, limit, search };
+  });
+
+  app.post('/api/v1/schools', { preHandler: requireAuthentication }, async (request, reply) => {
+    const parsed = schoolSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid school data', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { legalName, tradeName, documentNumber } = parsed.data;
+    const result = await pool.query(`INSERT INTO schools (legal_name, trade_name, document_number)
+      VALUES ($1, $2, $3)
+      RETURNING id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [legalName, tradeName ?? null, documentNumber ?? null]);
+    return reply.code(201).send(result.rows[0]);
+  });
+
+  app.get('/api/v1/students', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const query = request.query as { schoolId?: string; search?: string; limit?: string };
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 100);
+    const search = query.search?.trim() ?? '';
+    const result = await pool.query(`SELECT id, school_id AS "schoolId", customer_id AS "customerId", full_name AS "fullName", document_number AS "documentNumber", enrollment_number AS "enrollmentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM students WHERE deleted_at IS NULL AND ($1 = '' OR full_name ILIKE $2 OR document_number ILIKE $2 OR enrollment_number ILIKE $2)
+      AND ($3::uuid IS NULL OR school_id = $3::uuid) ORDER BY full_name LIMIT $4`, [search, `%${search}%`, query.schoolId ?? null, limit]);
+    return { items: result.rows, limit, search, schoolId: query.schoolId ?? null };
+  });
+
+  app.post('/api/v1/students', { preHandler: requireAuthentication }, async (request, reply) => {
+    const parsed = studentSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid student data', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { schoolId, customerId, fullName, documentNumber, enrollmentNumber } = parsed.data;
+    const result = await pool.query(`INSERT INTO students (school_id, customer_id, full_name, document_number, enrollment_number)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, school_id AS "schoolId", customer_id AS "customerId", full_name AS "fullName", document_number AS "documentNumber", enrollment_number AS "enrollmentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [schoolId, customerId ?? null, fullName, documentNumber ?? null, enrollmentNumber ?? null]);
+    return reply.code(201).send(result.rows[0]);
+  });
+
+  app.get('/api/v1/customers/:customerId/contacts', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { customerId } = request.params as { customerId: string };
+    if (!z.string().uuid().safeParse(customerId).success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid customer id', correlationId: request.id });
+    const result = await pool.query(`SELECT id, customer_id AS "customerId", type, value, is_primary AS "isPrimary", is_verified AS "isVerified", created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM contacts WHERE customer_id = $1 AND deleted_at IS NULL ORDER BY is_primary DESC, created_at`, [customerId]);
+    return { items: result.rows };
+  });
+
+  app.post('/api/v1/customers/:customerId/contacts', { preHandler: requireAuthentication }, async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    const parsed = contactSchema.safeParse({ ...(request.body as object), customerId });
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid contact data', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { type, value, isPrimary } = parsed.data;
+    const result = await pool.query(`INSERT INTO contacts (customer_id, type, value, is_primary)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, customer_id AS "customerId", type, value, is_primary AS "isPrimary", is_verified AS "isVerified", created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [customerId, type, value, isPrimary]);
+    return reply.code(201).send(result.rows[0]);
+  });
+
+  app.get('/api/v1/agreements', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const query = request.query as { customerId?: string; schoolId?: string; limit?: string };
+    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 100);
+    const result = await pool.query(`SELECT id, school_id AS "schoolId", customer_id AS "customerId", student_id AS "studentId", reference, total_amount AS "totalAmount", installments_count AS "installmentsCount", status, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM agreements WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR customer_id = $1::uuid) AND ($2::uuid IS NULL OR school_id = $2::uuid)
+      ORDER BY created_at DESC LIMIT $3`, [query.customerId ?? null, query.schoolId ?? null, limit]);
+    return { items: result.rows, limit };
+  });
+
+  app.post('/api/v1/agreements', { preHandler: requireAuthentication }, async (request, reply) => {
+    const parsed = agreementSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid agreement data', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { schoolId, customerId, studentId, reference, totalAmount, installmentsCount } = parsed.data;
+    const result = await pool.query(`INSERT INTO agreements (school_id, customer_id, student_id, reference, total_amount, installments_count)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, school_id AS "schoolId", customer_id AS "customerId", student_id AS "studentId", reference, total_amount AS "totalAmount", installments_count AS "installmentsCount", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [schoolId, customerId, studentId ?? null, reference ?? null, totalAmount, installmentsCount]);
+    return reply.code(201).send(result.rows[0]);
+  });
+
+  app.get('/api/v1/installments', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const query = request.query as { agreementId?: string; status?: string; limit?: string };
+    const limit = Math.min(Math.max(Number(query.limit ?? 100) || 100, 1), 200);
+    const result = await pool.query(`SELECT id, agreement_id AS "agreementId", installment_number AS "installmentNumber", due_date AS "dueDate", original_amount AS "originalAmount", status, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM installments WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR agreement_id = $1::uuid) AND ($2 = '' OR status = $2)
+      ORDER BY due_date, installment_number LIMIT $3`, [query.agreementId ?? null, query.status ?? '', limit]);
+    return { items: result.rows, limit };
+  });
+
+  app.post('/api/v1/installments', { preHandler: requireAuthentication }, async (request, reply) => {
+    const parsed = installmentSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid installment data', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { agreementId, installmentNumber, dueDate, originalAmount } = parsed.data;
+    const result = await pool.query(`INSERT INTO installments (agreement_id, installment_number, due_date, original_amount)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, agreement_id AS "agreementId", installment_number AS "installmentNumber", due_date AS "dueDate", original_amount AS "originalAmount", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [agreementId, installmentNumber, dueDate, originalAmount]);
+    return reply.code(201).send(result.rows[0]);
+  });
+
+  app.get('/api/v1/payments', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const query = request.query as { installmentId?: string; status?: string; limit?: string };
+    const limit = Math.min(Math.max(Number(query.limit ?? 100) || 100, 1), 200);
+    const result = await pool.query(`SELECT id, installment_id AS "installmentId", amount, retained_amount AS "retainedAmount", released_amount AS "releasedAmount", paid_at AS "paidAt", status, source, external_id AS "externalId", created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM payments WHERE ($1::uuid IS NULL OR installment_id = $1::uuid) AND ($2 = '' OR status = $2)
+      ORDER BY created_at DESC LIMIT $3`, [query.installmentId ?? null, query.status ?? '', limit]);
+    return { items: result.rows, limit };
+  });
+
+  app.post('/api/v1/payments', { preHandler: requireAuthentication }, async (request, reply) => {
+    const parsed = paymentSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid payment data', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { installmentId, amount, paidAt, source, externalId } = parsed.data;
+    const result = await pool.query(`INSERT INTO payments (installment_id, amount, paid_at, status, source, external_id)
+      VALUES ($1, $2, $3, 'paid', $4, $5)
+      RETURNING id, installment_id AS "installmentId", amount, retained_amount AS "retainedAmount", released_amount AS "releasedAmount", paid_at AS "paidAt", status, source, external_id AS "externalId", created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [installmentId, amount, paidAt ? new Date(paidAt) : new Date(), source, externalId ?? null]);
+    return reply.code(201).send(result.rows[0]);
+  });
+
+  app.get('/api/v1/schools/:schoolId/retention', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const { schoolId } = request.params as { schoolId: string };
+    if (!z.string().uuid().safeParse(schoolId).success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid school id', correlationId: request.id });
+    const result = await pool.query(`SELECT s.id, s.retention_enabled AS "retentionEnabled", s.retention_target_amount AS "targetAmount",
+      COALESCE(SUM(r.amount), 0) AS "retainedAmount"
+      FROM schools s LEFT JOIN retention_ledger r ON r.school_id = s.id
+      WHERE s.id = $1 AND s.deleted_at IS NULL GROUP BY s.id`, [schoolId]);
+    if (!result.rows[0]) return reply.code(404).send({ code: 'NOT_FOUND', message: 'School not found', correlationId: request.id });
+    return result.rows[0];
+  });
+
+  app.post('/api/v1/auth/login', async (request, reply) => {
+    const parsed = loginSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid login data', correlationId: request.id });
+    }
+    if (!pool) {
+      return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Authentication is temporarily unavailable', correlationId: request.id });
+    }
+
+    const result = await pool.query<{
+      id: string;
+      password_hash: string;
+      display_name: string;
+      roles: string[] | null;
+    }>(`SELECT u.id, u.password_hash, u.display_name,
+               COALESCE(array_agg(r.name) FILTER (WHERE r.name IS NOT NULL), ARRAY[]::text[]) AS roles
+          FROM users u
+          LEFT JOIN user_roles ur ON ur.user_id = u.id
+          LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.email = $1 AND u.is_active = true
+         GROUP BY u.id`, [parsed.data.email]);
+    const user = result.rows[0];
+    if (!user || !(await verifyPassword(parsed.data.password, user.password_hash))) {
+      return reply.code(401).send({ code: 'INVALID_CREDENTIALS', message: 'Invalid email or password', correlationId: request.id });
+    }
+
+    const tokenId = randomUUID();
+    await pool.query(`INSERT INTO auth_sessions (user_id, token_id, expires_at)
+      VALUES ($1, $2, now() + interval '15 minutes')`, [user.id, tokenId]);
+    const accessToken = app.jwt.sign({ sub: user.id, sid: tokenId, name: user.display_name, roles: user.roles ?? [] });
+    return { accessToken, tokenType: 'Bearer', expiresIn: 900 };
+  });
+
+  app.post('/api/v1/auth/logout', { preHandler: async (request, reply) => {
+    try {
+      await request.jwtVerify();
+    } catch {
+      return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Authentication required', correlationId: request.id });
+    }
+  } }, async (request, reply) => {
+    const sessionId = (request.user as { sid?: string }).sid;
+    if (pool && sessionId) {
+      await pool.query('UPDATE auth_sessions SET revoked_at = now() WHERE token_id = $1 AND revoked_at IS NULL', [sessionId]);
+    }
+    return reply.code(204).send();
+  });
+
+  app.get('/api/v1/auth/me', { preHandler: async (request, reply) => {
+    try {
+      await request.jwtVerify();
+    } catch {
+      return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'Authentication required', correlationId: request.id });
+    }
+  } }, async (request) => ({ user: request.user }));
+  app.setNotFoundHandler((request, reply) => reply.code(404).send({ code: 'NOT_FOUND', message: 'Route not found', correlationId: request.id }));
+  app.setErrorHandler((error, request, reply) => {
+    request.log.error({ err: error }, 'request failed');
+    const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : 500;
+    return reply.code(statusCode >= 400 ? statusCode : 500).send({ code: 'INTERNAL_ERROR', message: 'Unexpected error', correlationId: request.id });
+  });
+  return app;
+}

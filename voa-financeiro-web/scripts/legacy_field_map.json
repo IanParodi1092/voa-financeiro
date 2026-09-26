@@ -1,0 +1,690 @@
+{
+  "version": 1,
+  "source_name": "VOA.xlsx",
+  "purpose": "Dicionario da fase 2: cada coluna legada recebe uma decisao explicita (map/ignore/defer/review). Nenhuma coluna chega a carga canonica sem passar por aqui. Validado por scripts/build_field_dictionary.py contra o schema real em apps/api/migrations/*.sql.",
+  "type_conventions": {
+    "text": "texto livre limpo",
+    "name": "nome de pessoa, escola ou referencia descritiva",
+    "document": "CPF ou CNPJ somente digitos",
+    "legacy_id": "identificador da origem preservado para rastreabilidade",
+    "code": "codigo/enum curto normalizado",
+    "numeric": "valor monetario numeric(14,2)",
+    "integer": "numero inteiro",
+    "date": "data ISO (YYYY-MM-DD)",
+    "datetime": "data e hora ISO",
+    "boolean": "booleano",
+    "reference": "chave estrangeira resolvida por legacy_id",
+    "url": "URL de cobranca, boleto ou link Asaas",
+    "json": "estrutura JSON preservada"
+  },
+  "normalizations": {
+    "none": "sem transformacao",
+    "trim": "remove espacos nas pontas",
+    "collapse_ws": "remove espacos duplicados e das pontas",
+    "digits": "mantem somente digitos",
+    "upper": "converte para maiusculas",
+    "normalize_name": "remove acentos, normaliza caixa e espacos (chave de deduplicacao)",
+    "iso_date": "converte para data ISO",
+    "iso_datetime": "converte para data e hora ISO",
+    "money": "converte para numeric(14,2)",
+    "integer": "converte para inteiro",
+    "boolean_sim_nao": "traduz Sim/Nao para booleano",
+    "value_map": "traduz valores legados com o mapa `values` do proprio campo",
+    "value_map_ci": "traduz valores legados com `values`, ignorando caixa e acentos da chave",
+    "min_positive": "descarta valores menores ou iguais a zero",
+    "positive_integer": "converte para inteiro e descarta valores menores ou iguais a zero"
+  },
+  "reason_codes": {
+    "legacy_audit_only": "auditoria do PowerApps/Dataverse (Created/Modified/By); a auditoria canonica nova e independente",
+    "denormalized_display_name": "copia do nome para exibicao na origem; o nome canonico vem da chave estrangeira",
+    "computed_cache": "valor derivado/recalculavel a partir das tabelas canonicas",
+    "empty_column": "coluna vazia em todas as linhas da origem",
+    "attachment_metadata": "referencia de anexo do Dataverse; arquivos nao migram nesta fase",
+    "secret_revoked": "segredo/credencial: nunca migrar e deve ser revogado na origem",
+    "staging_helper": "aba auxiliar de carga manual/planilha; nao representa entidade do dominio",
+    "constant_placeholder": "valor constante de preenchimento; nao representa dado do dominio",
+    "legacy_flag": "flag operacional legado sem equivalente canonico",
+    "no_canonical_destination": "sem destino canonico nesta fase; o valor permanece no payload de staging",
+    "payables_not_modeled": "contas a pagar, fornecedores e despesas nao entram no dominio canonico desta fase",
+    "legal_process_not_modeled": "processos juridicos, publicacoes e etapas ficam para fase posterior",
+    "contact_log_not_modeled": "historico de contato exige tabela propria (interactions); nao cabe em contacts",
+    "student_contact_not_modeled": "contato do aluno exige tabela propria; contacts e restrito a customers",
+    "school_config_not_modeled": "configuracao comercial da escola (tipo de acordo, contrato, origem) nao esta modelada",
+    "agreement_attrs_not_modeled": "atributo de acordo/divida sem coluna canonica (tipo, sucumbencia, percentual, repasse)",
+    "out_of_scope_operations": "operacao de escritorio (agenda, tarefas) fora do escopo desta fase",
+    "crm_funnel_not_modeled": "funil comercial (status de negociacao, origem do lead) nao esta modelado",
+    "address_not_modeled": "endereco estruturado ainda nao tem tabela canonica",
+    "business_segment_not_modeled": "segmento/CNAE e dados de mercado nao estao modelados",
+    "user_link_requires_review": "vinculo com usuario exige conciliacao; nunca por nome isolado",
+    "billing_integration_not_modeled": "conciliacao bancaria/extrato fica para fase posterior",
+    "calendar_not_modeled": "calendario de feriados nao esta modelado nesta fase",
+    "inflation_index_not_modeled": "indice de correcao monetaria (INPC) e necessario ao recalculo de dividas; fase posterior",
+    "document_templates_not_modeled": "modelos de documento e historico de geracao nao estao modelados",
+    "bank_registry_not_modeled": "cadastro de bancos/contas nao esta modelado nesta fase",
+    "billing_email_templates_not_modeled": "modelos de e-mail de cobranca nao estao modelados nesta fase",
+    "company_registry_not_modeled": "cadastro de empresas do grupo nao esta modelado nesta fase",
+    "legal_fees_table_not_modeled": "tabela de custas juridicas nao esta modelada nesta fase",
+    "route_not_modeled": "roteirizacao de visitas nao esta modelada nesta fase",
+    "recalculation_log_not_modeled": "log de recalculo de dividas nao esta modelado nesta fase",
+    "school_fee_not_modeled": "tabela de taxas por escola/ano nao esta modelada nesta fase",
+    "user_import_requires_credential_reset": "usuario do legado entra com email novo e senha redefinida; nunca importar credencial",
+    "contact_destination_requires_customer_link": "contato exige cliente resolvido antes de gravar em contacts",
+    "batch_upload_helper": "planilha auxiliar usada para carga em lote; revisar antes de virar dado canonico",
+    "semantics_unclear": "semantica legada nao documentada; exige confirmacao de negocio",
+    "unreliable_document_source": "documento do legado com falha de validacao; nao pode vincular automaticamente",
+    "name_only_link_not_allowed": "vinculo somente por nome nao e permitido; exige documento ou revisao assistida",
+    "status_map_unconfirmed": "rotulos de status do legado sem traducao confirmada para o status canonico",
+    "environment_unresolved": "nao e possivel saber se o identificador Asaas e de sandbox ou producao",
+    "pending_policy": "decisao de negocio pendente registrada na fase 2",
+    "dre_not_modeled": "plano de contas/DRE gerencial (categorias, itens e valores) nao esta modelado nesta fase",
+    "schema_gap_pending": "exige migration nova ou ajuste de schema antes da carga canonica"
+  },
+  "schema_gaps": {
+    "installments_legacy_id": "installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration 0007",
+    "installments_description": "installments nao tem descricao/tipo do debito (Divida_Listagem.Tipo_de_debito, Obs)",
+    "agreements_source_resolution": "agreements.legacy_id precisa vir de uma unica origem (TBL_PAGAMENTO ou TBL_DIVIDA); decisao pendente",
+    "agreements_type": "agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO)",
+    "agreements_closed_at": "agreements nao tem data de fechamento/assinatura",
+    "payments_retention_approval": "retencao e repasse nao tem datas de aprovacao, programacao e realizacao",
+    "payments_charge_status": "payments/asaas_charges nao tem mapa de status de boleto do legado",
+    "schools_contact_address": "schools nao tem contato nem endereco; contacts e restrito a customers",
+    "students_contact": "students nao tem contato proprio; contacts e restrito a customers",
+    "customers_address": "customers nao tem endereco estruturado",
+    "customers_document_type": "customers nao tem document_type (cpf/cnpj) exigido por CANONICAL_DATA_RULES.md",
+    "contacts_legacy_id": "contacts nao tem colunas legacy_*; a origem do contato se perde na carga",
+    "students_guardian_details": "students nao tem dados do responsavel (RG, profissao, estado civil)",
+    "users_legacy_import": "users exige email e password_hash; importacao do legado precisa de politica de credencial"
+  },
+  "sheets": {
+    "TBL_ESCOLA": {
+      "target_entity": "schools",
+      "row_kind": "entity",
+      "notes": "75 escolas. legal_name vem de Escola.Nome com sobreposicao de Escola_RazaoSocial; CNPJ normalizado em document_number (6 linhas sem CNPJ).",
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "map": "schools.legacy_id", "type": "legacy_id", "normalization": "trim", "required": true, "provides_legacy_id_for": "schools" },
+        { "match": "Escola.Nome", "map": "schools.legal_name", "type": "name", "normalization": "collapse_ws", "required": true, "priority": 10 },
+        { "match": "Escola_RazaoSocial", "map": "schools.legal_name", "type": "name", "normalization": "collapse_ws", "priority": 20, "note": "sobrepoe Escola.Nome quando preenchido (38 linhas)" },
+        { "match": "Escola_NomeFantasia", "map": "schools.trade_name", "type": "name", "normalization": "collapse_ws", "priority": 10 },
+        { "match": "Escola.CNPJ", "map": "schools.document_number", "type": "document", "normalization": "digits", "note": "69 preenchidos; unicidade forte avaliada na carga" },
+        { "match": "Escola.Endereco", "defer": "no_canonical_destination", "gap": "schools_contact_address" },
+        { "match": "Escola.Telefone", "defer": "no_canonical_destination", "gap": "schools_contact_address" },
+        { "match": "Escola_Email", "defer": "contact_destination_requires_customer_link", "gap": "schools_contact_address" },
+        { "match": "Escola.TipoAcordo", "defer": "school_config_not_modeled" },
+        { "match": "Escola_DataContrato", "defer": "school_config_not_modeled" },
+        { "match": "Escola_ComoConheceu", "defer": "school_config_not_modeled" },
+        { "match": "EscolaLogo", "ignore": "empty_column" },
+        { "match": "Escola_DadosBancarios", "ignore": "empty_column" },
+        { "match": "Created", "ignore": "legacy_audit_only" },
+        { "match": "Modified", "ignore": "legacy_audit_only" }
+      ]
+    },
+    "TBL_CLIENTE": {
+      "target_entity": "customers",
+      "row_kind": "entity",
+      "notes": "24.696 clientes. Nome nunca e chave: 19.780 valores distintos para 24.696 linhas. Documento mistura CPF e CNPJ e exige fila de duplicidade na carga.",
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "map": "customers.legacy_id", "type": "legacy_id", "normalization": "trim", "required": true, "provides_legacy_id_for": "customers" },
+        { "match": "CLIENTE_NOME", "map": "customers.full_name", "type": "name", "normalization": "collapse_ws", "required": true },
+        { "match": "CLIENTE_CNPJ", "map": "customers.document_number", "type": "document", "normalization": "digits", "note": "2.138 preenchidos; CPF e CNPJ no mesmo campo", "gap": "customers_document_type" },
+        { "match": "CLIENTE_NOMESOCIAL", "defer": "no_canonical_destination" },
+        { "match": "CLIENTE_ENDERECO", "defer": "address_not_modeled", "gap": "customers_address" },
+        { "match": "CLIENTE_ENDERECONUMERO", "defer": "address_not_modeled", "gap": "customers_address" },
+        { "match": "CLIENTE_COMPLEMENTO", "defer": "address_not_modeled", "gap": "customers_address" },
+        { "match": "CLIENTE_BAIRRO", "defer": "address_not_modeled", "gap": "customers_address" },
+        { "match": "CLIENTE_CIDADE", "defer": "address_not_modeled", "gap": "customers_address" },
+        { "match": "CLIENTE_UF", "defer": "address_not_modeled", "gap": "customers_address" },
+        { "match": "CLIENTE_CEP", "defer": "address_not_modeled", "gap": "customers_address" },
+        { "match": "CLIENTE_CNAECODE", "defer": "business_segment_not_modeled" },
+        { "match": "CLIENTE_CNAEDESCRICAO", "defer": "business_segment_not_modeled" },
+        { "match": "CLIENTE_STATUS", "defer": "crm_funnel_not_modeled", "note": "12 rotulos de funil comercial, nao status de cadastro" },
+        { "match": "CLIENTE_ORIGEM", "defer": "crm_funnel_not_modeled" },
+        { "match": "CLIENTE_RESPONSAVEL", "defer": "user_link_requires_review" },
+        { "match": "CLIENTE_INEP", "review": "semantics_unclear", "note": "12.171 valores distintos em 12.437 preenchidos; uso nao documentado" }
+      ]
+    },
+    "TBL_ALUNO": {
+      "target_entity": "students",
+      "row_kind": "entity",
+      "notes": "6.652 alunos. students.enrollment_number e students.document_number ficam vazios: TBL_ALUNO nao tem matricula nem documento do aluno. O vinculo com customers depende de CPFResponsavel e continua bloqueado (revisao).",
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "map": "students.legacy_id", "type": "legacy_id", "normalization": "trim", "required": true, "provides_legacy_id_for": "students" },
+        { "match": "Aluno.Nome", "map": "students.full_name", "type": "name", "normalization": "collapse_ws", "required": true },
+        { "match": "Aluno.Escola.ID", "map": "students.school_id", "type": "reference", "ref": "schools", "normalization": "trim", "required": true, "note": "resolve schools.legacy_id; 6.651 preenchidos em 72 escolas" },
+        { "match": "Aluno_Ativo", "map": "students.status", "type": "code", "normalization": "value_map_ci", "required": true, "values": { "sim": "active", "nao": "inactive" }, "note": "6.538 preenchidos; vazio nao pode virar inativo automaticamente" },
+        { "match": "Aluno.CPFResponsavel", "review": "unreliable_document_source", "note": "1.091 invalidos em DOCUMENT_INVALID; 447 repeticoes; nao vincula customers sem decisao" },
+        { "match": "Aluno.Responsavel_Financeiro", "review": "name_only_link_not_allowed", "note": "5.840 nomes distintos; nome nunca identifica cliente" },
+        { "match": "Aluno.Telefone", "defer": "student_contact_not_modeled", "gap": "students_contact" },
+        { "match": "Aluno.Endereco", "defer": "address_not_modeled", "gap": "students_contact" },
+        { "match": "Aluno_RGResponsavel", "defer": "no_canonical_destination", "gap": "students_guardian_details" },
+        { "match": "Aluno_ResponsavelEstadoCivil", "defer": "no_canonical_destination", "gap": "students_guardian_details" },
+        { "match": "Aluno_ResponsavelProfissao", "defer": "no_canonical_destination", "gap": "students_guardian_details" },
+        { "match": "Aluno.Login.ID", "defer": "user_link_requires_review" },
+        { "match": "Aluno_Responsavel", "defer": "user_link_requires_review", "note": "16 valores distintos; provavel usuario interno responsavel" },
+        { "match": "Aluno_MotivoInativo", "defer": "no_canonical_destination" },
+        { "match": "Aluno_MotivoDivida", "defer": "no_canonical_destination" },
+        { "match": "Aluno_Comentario", "defer": "no_canonical_destination" },
+        { "match": "Aluno_AnoDivida", "review": "semantics_unclear" },
+        { "match": "Aluno_Contrato", "review": "semantics_unclear", "note": "2 valores distintos em 3.755 linhas" },
+        { "match": "Aluno.UltimoContato", "ignore": "computed_cache", "note": "6.560 preenchidos, 688 datas distintas: data derivada do historico de contato" },
+        { "match": "Aluno.PesquisaContato", "ignore": "constant_placeholder", "note": "6.148 preenchidos com valor constante" },
+        { "match": "Aluno.Acordo", "ignore": "computed_cache" },
+        { "match": "Aluno_Processo", "ignore": "computed_cache" },
+        { "match": "Aluno_Quitado", "ignore": "computed_cache" },
+        { "match": "Aluno_StatusDivida", "ignore": "computed_cache" },
+        { "match": "Aluno_StatusAcordo", "ignore": "computed_cache" },
+        { "match": "Aluno_Qtdivida", "ignore": "computed_cache" },
+        { "match": "Aluno_QtAcordo", "ignore": "computed_cache" },
+        { "match": "Aluno_QtProcesso", "ignore": "computed_cache" },
+        { "match": "Aluno_MinDataDivida", "ignore": "computed_cache", "note": "menor vencimento das parcelas: recalcular a partir de installments" },
+        { "match": "Aluno_DividaStatus", "ignore": "computed_cache" },
+        { "match": "Attachments", "ignore": "attachment_metadata" },
+        { "match": "Aluno_DocPai", "ignore": "constant_placeholder", "note": "3.754 linhas, 1 valor distinto" },
+        { "match": "Aluno_DocSed", "ignore": "constant_placeholder", "note": "3.652 linhas, 1 valor distinto" },
+        { "match": "__PowerAppsId__", "ignore": "empty_column" },
+        { "match": "Created", "ignore": "legacy_audit_only" }
+      ]
+    },
+    "TBL_DIVIDA": {
+      "target_entity": "agreements",
+      "row_kind": "entity-or-defer",
+      "notes": "6.868 dividas. Decisao pendente: agreements.legacy_id vem de TBL_PAGAMENTO; se a decisao for por TBL_DIVIDA, os campos marcados como `pending_policy` viram mapeamento direto.",
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "6.868 ids distintos; provedor de agreements ainda nao confirmado" },
+        { "match": "Divida.Aluno.ID", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "6.856 preenchidos; viraria agreements.student_id" },
+        { "match": "Divida_Nome", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "818 valores distintos; viraria agreements.reference" },
+        { "match": "Divida.Pagamento.ID", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "1.595 vinculos divida -> acordo/pagamento" },
+        { "match": "Divida.ValorOriginalTotal", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "somente 47 de 6.868 preenchidos: total precisa ser derivado dos itens" },
+        { "match": "Divida.ValorAtualizadoTotal", "review": "pending_policy", "gap": "agreements_source_resolution" },
+        { "match": "Divida.Processo.ID", "defer": "legal_process_not_modeled" },
+        { "match": "Divida_MinData", "ignore": "computed_cache" },
+        { "match": "Created", "ignore": "legacy_audit_only" }
+      ]
+    },
+    "TBL_DIVIDA_LISTAGEM": {
+      "target_entity": "agreements",
+      "row_kind": "child-or-defer",
+      "notes": "42.886 itens de divida. Se o acordo vier de TBL_PAGAMENTO, esta aba e composicao da divida (fica em staging); se o acordo vier da divida, os itens viram installments.",
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "review": "schema_gap_pending", "gap": "installments_legacy_id", "note": "42.886 ids distintos; installments nao tem legacy_id" },
+        { "match": "Divida_Listagem.Divida.ID", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "6.838 dividas distintas; viraria installments.agreement_id" },
+        { "match": "Divida_Listagem.Vencimento", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "viraria installments.due_date (42.886 preenchidos)" },
+        { "match": "Divida_Listagem.Valor", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "viraria installments.original_amount" },
+        { "match": "Divida_Listagem.Valor_Atualizado", "review": "pending_policy", "gap": "agreements_source_resolution", "note": "valor corrigido; exige regra de juros/INPC" },
+        { "match": "Divida_Listagem.Tipo_de_debito", "review": "semantics_unclear", "gap": "installments_description", "note": "1.074 valores distintos, com lixo (ex.: '0', '[PIUYTREW'); precisa de classificacao" },
+        { "match": "Divida_Listagem.Obs", "defer": "no_canonical_destination", "gap": "installments_description" },
+        { "match": "DividaListagem_DataVencValor", "ignore": "computed_cache" },
+        { "match": "Modified", "ignore": "legacy_audit_only" },
+        { "match": "Created", "ignore": "legacy_audit_only" }
+      ]
+    },
+    "TBL_PAGAMENTO": {
+      "target_entity": "agreements",
+      "row_kind": "entity",
+      "notes": "1.572 acordos/pagamentos e a origem confirmada de agreements (fase 7). Decisao do operador (25/09): o cliente pagador nunca existiu como coluna no app legado (TBL_CLIENTE e registro institucional de CNPJ/CNAE/INEP e nenhuma ponte por e-mail/telefone/nome/CNPJ fechou), entao ele e sintetizado desta propria aba - customers.legacy_id = Pagamento.ID, customers.full_name = Pagamento.Nome_Aluno e asaas_customers.external_id = Pagamento.CliAsaas_ID com ambiente `production`. agreements.customer_id entra por `links: row:customers` e total_amount/installments_count sao derivados de TBL_PAGAMENTO_LISTAGEM.",
+      "links": {
+        "agreements.customer_id": "row:customers",
+        "asaas_customers.customer_id": "row:customers"
+      },
+      "aggregates": {
+        "source_sheet": "TBL_PAGAMENTO_LISTAGEM",
+        "row_table": "installments",
+        "group_by": "Pagamento_Listagem.Pagamento.ID",
+        "unique_by": { "Pagamento_Listagem.Parcela_Numero": "installments.installment_number" },
+        "targets": {
+          "agreements.total_amount": { "op": "sum", "measure": "Pagamento_Listagem.Valor_Parcela", "normalization": "money", "status": "proposed", "note": "soma das parcelas com valor legivel (15.533 preenchidas), deduplicada por (acordo, parcela) exatamente como installments" },
+          "agreements.installments_count": { "op": "count", "measure": "Pagamento_Listagem.Valor_Parcela", "normalization": "money", "status": "proposed", "note": "conta apenas parcelas com valor valido, espelhando installments.original_amount NOT NULL e a unicidade (agreement_id, installment_number)" }
+        }
+      },
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "map": "agreements.legacy_id", "type": "legacy_id", "normalization": "trim", "required": true, "status": "proposed", "provides_legacy_id_for": "agreements", "note": "TBL_PAGAMENTO e a origem do acordo; TBL_DIVIDA fica como composicao em staging" },
+        { "match": "ID", "map": "customers.legacy_id", "type": "legacy_id", "normalization": "trim", "required": true, "status": "proposed", "provides_legacy_id_for": "customers", "note": "mesmo id do acordo identifica o cliente pagador sintetizado (legacy_table = TBL_PAGAMENTO)" },
+        { "match": "Pagamento.Escola_ID", "map": "agreements.school_id", "type": "reference", "ref": "schools", "normalization": "trim", "required": true, "status": "proposed", "note": "1.571 preenchidos, 1 vazio" },
+        { "match": "Pagamento.Aluno_ID", "map": "agreements.student_id", "type": "reference", "ref": "students", "normalization": "trim", "status": "proposed", "note": "1.568 preenchidos, 4 vazios; contem listas ('102;103')" },
+        { "match": "Pagamento.UsuarioFechamento", "defer": "user_link_requires_review" },
+        { "match": "Pagamento_USUARIOCRIACAO", "defer": "user_link_requires_review" },
+        { "match": "Pagamento_DataFechamento", "review": "schema_gap_pending", "gap": "agreements_closed_at", "note": "1.497 preenchidos; viraria agreements.closed_at" },
+        { "match": "Pagamento.Tipo", "defer": "agreement_attrs_not_modeled", "gap": "agreements_type", "note": "JUDICIAL, EXTRAJUDICIAL, CEJUSC, PERSONALIZADO" },
+        { "match": "Pagamento_SucumbenciaTotal", "defer": "agreement_attrs_not_modeled" },
+        { "match": "Pagamento_SucumbenciaResto", "defer": "agreement_attrs_not_modeled" },
+        { "match": "Pagamento_SucumbenciaTipo", "defer": "agreement_attrs_not_modeled" },
+        { "match": "Pagamento_PorcCobrar", "defer": "agreement_attrs_not_modeled" },
+        { "match": "Pagamento_CliAsaas_ID", "map": "asaas_customers.external_id", "type": "text", "normalization": "trim", "required": true, "status": "proposed", "note": "1.122 preenchidos (2 ids repetidos): chave do cliente pagador no Asaas" },
+        { "match": "Pagamento_CliAsaas_ID", "map": "asaas_customers.environment", "type": "code", "normalization": "none", "const": "production", "required": true, "status": "proposed", "note": "decisao do operador (25/09): as cobrancas do legado sao de producao; o check do schema aceita sandbox|production" },
+        { "match": "Pagamento_EmailPrincipal", "defer": "contact_destination_requires_customer_link" },
+        { "match": "Pagamento_CelPrincipal", "defer": "contact_destination_requires_customer_link" },
+        { "match": "Pagamento_Nome", "review": "semantics_unclear", "note": "73 valores distintos em 1.570 linhas" },
+        { "match": "Pagamento_Aluno_ID", "defer": "no_canonical_destination", "note": "coluna duplicada de Pagamento.Aluno_ID; 1.152 preenchidos e nao confiaveis" },
+        { "match": "Pagamento.Nome_Aluno", "map": "customers.full_name", "type": "name", "normalization": "collapse_ws", "required": true, "status": "proposed", "note": "rotulo do cliente pagador sintetizado; sem este nome a linha nao cria customers e o acordo fica sem customer_id (LOAD_ROW_LINK_UNRESOLVED)" },
+        { "match": "Pagamento.Nome_Escola", "ignore": "denormalized_display_name" },
+        { "match": "Pagamento.ValorParcelaTotal", "ignore": "empty_column" },
+        { "match": "Pagamento.ValorPagoTotal", "ignore": "empty_column" },
+        { "match": "Pagamento_StatusAcordo", "ignore": "empty_column" },
+        { "match": "Attachments", "ignore": "attachment_metadata" },
+        { "match": "Created", "ignore": "legacy_audit_only" }
+      ]
+    },
+    "TBL_PAGAMENTO_LISTAGEM": {
+      "target_entity": "installments",
+      "row_kind": "child",
+      "notes": "15.535 parcelas de acordo. Origem proposta de installments e payments (status `proposed`). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments/asaas_charges a parcela criada pela mesma linha de origem.",
+      "links": {
+        "payments.installment_id": "row:installments",
+        "asaas_charges.installment_id": "row:installments"
+      },
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "review": "schema_gap_pending", "gap": "installments_legacy_id", "note": "15.535 ids distintos; installments nao tem legacy_id" },
+        { "match": "Pagamento_Listagem.Pagamento.ID", "map": "installments.agreement_id", "type": "reference", "ref": "agreements", "normalization": "trim", "required": true, "status": "proposed", "note": "15.529 preenchidos, 6 vazios, 1.508 acordos distintos" },
+        { "match": "Pagamento_Listagem.Parcela_Numero", "map": "installments.installment_number", "type": "integer", "normalization": "positive_integer", "required": true, "status": "proposed", "note": "15.534 preenchidos; a CHECK do schema exige > 0, entao 0/negativo e lixo e nao vira parcela (nem conta no agregado do acordo); unicidade por (agreement_id, installment_number)" },
+        { "match": "Pagamento_Listagem.Data_Vencimento", "map": "installments.due_date", "type": "date", "normalization": "iso_date", "required": true, "status": "proposed" },
+        { "match": "Pagamento_Listagem.Valor_Parcela", "map": "installments.original_amount", "type": "numeric", "normalization": "money", "required": true, "status": "proposed" },
+        { "match": "Pagamento_Listagem.Valor_Pago", "map": "payments.amount", "type": "numeric", "normalization": "min_positive", "required": true, "status": "proposed", "note": "13.245 preenchidos; payments so existe quando o valor pago e > 0 (vazio/zero/negativo descarta a linha)" },
+        { "match": "Pagamento_Listagem.Data_Pagamento", "map": "payments.paid_at", "type": "datetime", "normalization": "iso_datetime", "status": "proposed", "note": "11.983 preenchidos" },
+        { "match": "Pagamento_Lista.ValorRetido", "map": "payments.retained_amount", "type": "numeric", "normalization": "money", "status": "proposed", "note": "retencao por parcela: min(valor_pago * percentual, meta da escola)" },
+        { "match": "Pagamento_PagAsaas_ID", "map": "asaas_charges.external_id", "type": "text", "normalization": "trim", "status": "proposed", "note": "6.369 distintos = unico na origem" },
+        { "match": "Pagamento_LinkPag", "map": "asaas_charges.invoice_url", "type": "url", "normalization": "trim", "status": "proposed" },
+        { "match": "Pagamento_CopiaeCola", "map": "asaas_charges.pix_qr_code", "type": "text", "normalization": "trim", "status": "proposed" },
+        { "match": "Pagamento_Lista.Status", "review": "status_map_unconfirmed", "note": "5 rotulos: AGUARDANDO APROVACAO, NAO EXISTE REPASSE, PAGAMENTO DIRETO, REPASSE APROVADO, REPASSE REALIZADO" },
+        { "match": "Pagamento_Banco_Status", "review": "status_map_unconfirmed", "gap": "payments_charge_status", "note": "8 rotulos de boleto/cobranca" },
+        { "match": "Pagamento_Lista.DataAprovacao", "review": "schema_gap_pending", "gap": "payments_retention_approval" },
+        { "match": "Pagamento_Lista.MesAnoProgramacaoRepasse", "review": "schema_gap_pending", "gap": "payments_retention_approval" },
+        { "match": "Pagamento_Lista.MesAnoRepasseRealizado", "review": "schema_gap_pending", "gap": "payments_retention_approval" },
+        { "match": "Pagamento_Lista.PorcentagemAcordo", "review": "semantics_unclear", "note": "7.080 preenchidos, 76 valores distintos" },
+        { "match": "Pagamento_Lista_ValorSucumbencia", "defer": "agreement_attrs_not_modeled" },
+        { "match": "Pagamento_Lista.InicioDivida", "ignore": "computed_cache", "note": "ano de inicio da divida, derivavel de installments" },
+        { "match": "Pagamento_Lista.TipoAcordo", "defer": "agreement_attrs_not_modeled", "gap": "agreements_type" },
+        { "match": "Pagamento_Lista.PGTColegio", "ignore": "legacy_flag", "note": "2 valores distintos (flag)" },
+        { "match": "Pagamento_Lista_Vazio", "ignore": "computed_cache" },
+        { "match": "Pagamento_Listagem_Tipo", "review": "semantics_unclear", "note": "15.063 preenchidos, 2 valores distintos" },
+        { "match": "Pagamento_Extrato_ID", "defer": "billing_integration_not_modeled" },
+        { "match": "Pagamento_Whats", "ignore": "legacy_flag" },
+        { "match": "Pagamento_Email", "ignore": "legacy_flag" },
+        { "match": "Pagamento_BoletoCriado", "ignore": "legacy_flag" },
+        { "match": "Pagamento_Categoria", "ignore": "empty_column" },
+        { "match": "Pagamento_CliAsaas_ID", "ignore": "empty_column" },
+        { "match": "Pagamento_UltimaDataEnvioAtraso", "ignore": "empty_column" },
+        { "match": "Modified By", "ignore": "legacy_audit_only" },
+        { "match": "Modified", "ignore": "legacy_audit_only" },
+        { "match": "Created", "ignore": "legacy_audit_only" }
+      ]
+    },
+    "TBL_CLIENTEENDTEL": {
+      "target_entity": "contacts",
+      "row_kind": "child",
+      "notes": "54.782 telefones/e-mails de cliente: unica aba que cabe em contacts sem tabela nova. Status `proposed`: exige customer_id resolvido pelo legacy_id do cliente.",
+      "columns": [
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "review": "schema_gap_pending", "gap": "contacts_legacy_id", "note": "54.782 ids distintos sem destino canonico" },
+        { "match": "CLIENTEENDTEL_CLIENTE_ID", "map": "contacts.customer_id", "type": "reference", "ref": "customers", "normalization": "trim", "required": true, "status": "proposed", "note": "54.777 preenchidos; a FK canonica e o UUID do cliente resolvido" },
+        { "match": "CLIENTEENDTEL_TIPO", "map": "contacts.type", "type": "code", "normalization": "value_map_ci", "status": "proposed", "values": { "telefone": "phone", "email": "email" }, "note": "2 valores distintos; confirmar rotulos na carga" },
+        { "match": "CLIENTEENDTEL_VALOR", "map": "contacts.value", "type": "text", "normalization": "trim", "required": true, "status": "proposed", "note": "54.345 preenchidos; 37.809 distintos" }
+      ]
+    },
+    "TBL_USER": {
+      "target_entity": "users",
+      "row_kind": "entity-deferred",
+      "notes": "28 usuarios internos. Nenhuma senha e migrada: USER_SENHA/USER_PASS sao credenciais comprometidas. Entrada canonica exige email novo e redefinicao de senha.",
+      "columns": [
+        { "match": "ID", "review": "schema_gap_pending", "gap": "users_legacy_import", "note": "users nao tem legacy_id; entrada exige politica de credencial" },
+        { "match": "USER_USUARIO", "defer": "user_import_requires_credential_reset", "note": "28 logins distintos; base para o email canonico" },
+        { "match": "USER_NOME", "defer": "user_import_requires_credential_reset", "note": "viraria users.display_name" },
+        { "match": "USER_EMAIL", "defer": "user_import_requires_credential_reset", "note": "somente 1 preenchido; email precisa ser reconstruido" },
+        { "match": "USER_SENHA", "ignore": "secret_revoked" },
+        { "match": "USER_PASS", "ignore": "secret_revoked" },
+        { "match": "USER_NIVEL", "defer": "user_import_requires_credential_reset", "note": "3 niveis (2, 4, 5) sem mapa de papel definido" },
+        { "match": "USER_STATUS", "defer": "user_import_requires_credential_reset", "note": "ATIVADO, ATIVO, DESATIVADO" },
+        { "match": "USER_RECEBER_ALUNO", "defer": "user_import_requires_credential_reset" },
+        { "match": "USER_ALUNOS", "defer": "user_import_requires_credential_reset" },
+        { "match": "USER_FINANCERO", "defer": "user_import_requires_credential_reset" },
+        { "match": "USER_CPF", "defer": "user_import_requires_credential_reset" },
+        { "match": "Title", "ignore": "denormalized_display_name" }
+      ]
+    },
+    "TBL_BANCO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "Uma linha com credencial de API. Nada entra na carga canonica; a chave deve ser revogada na origem.",
+      "columns": [
+        { "match": "BANCO_APIKEY", "ignore": "secret_revoked", "note": "credencial comprometida: revogar na origem" },
+        { "match": "ID", "ignore": "legacy_audit_only" },
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "BANCO_DESCRICAO", "defer": "bank_registry_not_modeled" },
+        { "match": "BANCO_TESTE", "ignore": "legacy_flag" }
+      ]
+    },
+    "TBL_AUXSUBIR": {
+      "target_entity": null,
+      "row_kind": "helper",
+      "notes": "9.553 linhas de planilha auxiliar de carga com nome/endereco de escola. Unico lugar com endereco de escola em volume; precisa revisao antes de virar dado canonico.",
+      "columns": [
+        { "match": "Nome Escola2", "review": "semantics_unclear", "gap": "schools_contact_address", "note": "9.099 distintos; chave de conciliacao com TBL_ESCOLA desconhecida" },
+        { "match": "Endereco", "review": "semantics_unclear", "gap": "schools_contact_address" },
+        { "match": "Numero", "review": "semantics_unclear", "gap": "schools_contact_address" },
+        { "match": "Complemento", "review": "semantics_unclear", "gap": "schools_contact_address" },
+        { "match": "Bairro", "review": "semantics_unclear", "gap": "schools_contact_address" },
+        { "match": "Municipio", "review": "semantics_unclear", "gap": "schools_contact_address" },
+        { "match": "CEP", "review": "semantics_unclear", "gap": "schools_contact_address" },
+        { "match": "Nome Social", "defer": "no_canonical_destination" },
+        { "match": "Educ.Prof", "ignore": "constant_placeholder" },
+        { "match": "contador", "ignore": "staging_helper" },
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ID", "ignore": "staging_helper" }
+      ]
+    },
+    "TBL_CONTATO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "155.452 registros de historico de contato do aluno. Exige tabela de interacoes; nao cabe em contacts (que e de cliente).",
+      "default": { "defer": "contact_log_not_modeled", "gap": "students_contact" }
+    },
+    "TBL_ENDTEL": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "47.562 telefones/e-mails de aluno (ENDTEL_ALUNO_ID, 3 tipos, flag principal). Exige tabela de contato de aluno.",
+      "columns": [
+        { "match": "ID", "ignore": "legacy_audit_only" },
+        { "match": "Title", "ignore": "denormalized_display_name" },
+        { "match": "ENDTEL_ALUNO_ID", "review": "pending_policy", "gap": "students_contact", "note": "47.561 preenchidos em 6.894 alunos; unico contato de aluno em volume" },
+        { "match": "ENDTEL_TIPO", "defer": "student_contact_not_modeled", "gap": "students_contact" },
+        { "match": "ENDTEL_VALOR", "defer": "student_contact_not_modeled", "gap": "students_contact" },
+        { "match": "ENDTEL_PRINCIPAL", "defer": "student_contact_not_modeled", "gap": "students_contact" },
+        { "match": "ENDTEL_STATUS", "defer": "student_contact_not_modeled", "gap": "students_contact" },
+        { "match": "ENDTEL_OBSERVACAO", "defer": "no_canonical_destination", "gap": "students_contact" },
+        { "match": "ENDTEL_ORIGEM", "ignore": "legacy_flag" }
+      ]
+    },
+    "TBL_CLIENTECONTATO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "1.511 registros de contato comercial com cliente (forma, data, usuario). E historico, nao cadastro de contato.",
+      "default": { "defer": "contact_log_not_modeled" }
+    },
+    "TBL_CONSULTA_CONTATO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "2.583 consultas de contato com payload JSON por aluno; log operacional, nao dado mestre.",
+      "default": { "defer": "contact_log_not_modeled" }
+    },
+    "TBL_AUXSEPARAR": {
+      "target_entity": null,
+      "row_kind": "helper",
+      "notes": "Uma linha de planilha auxiliar de separacao de processo.",
+      "default": { "ignore": "staging_helper" }
+    },
+    "TBL_AGENDA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "185 compromissos/tarefas do escritorio com vinculo a aluno, escola e processo.",
+      "default": { "defer": "out_of_scope_operations" }
+    },
+    "TBL_AGENDAENVIO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "8 envios de agenda com status de resposta.",
+      "default": { "defer": "out_of_scope_operations" }
+    },
+    "TBL_CENTRODECUSTO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "108 centros de custo do financeiro de contas a pagar.",
+      "default": { "defer": "payables_not_modeled" }
+    },
+    "TBL_CLIFOR": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "3.612 clientes/fornecedores do modulo de contas a pagar.",
+      "default": { "defer": "payables_not_modeled" }
+    },
+    "TBL_CONTA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "47 contas bancarias internas com saldo.",
+      "default": { "defer": "payables_not_modeled" }
+    },
+    "TBL_DESPESA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "2.853 despesas de processo/divida (custas).",
+      "default": { "defer": "payables_not_modeled" }
+    },
+    "TBL_EMAILCOBRANCA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "148 modelos de e-mail de cobranca por colegio.",
+      "default": { "defer": "billing_email_templates_not_modeled" }
+    },
+    "TBL_EMAILLISTACONTATO": {
+      "target_entity": null,
+      "row_kind": "empty",
+      "notes": "Aba sem registros (0 linhas de dados).",
+      "default": { "ignore": "empty_column" }
+    },
+    "TBL_EMPRESA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "15 empresas do grupo (razao social, CNPJ, contato, coordenadas).",
+      "default": { "defer": "company_registry_not_modeled" }
+    },
+    "TBL_FERIADO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "9 datas de feriado usadas no calculo de vencimentos.",
+      "default": { "defer": "calendar_not_modeled" }
+    },
+    "TBL_GUIACUSTAS": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "20 linhas de custas judiciais (descricao e valor).",
+      "default": { "defer": "legal_fees_table_not_modeled" }
+    },
+    "TBL_INPC": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "194 indices INPC por data. Necessario ao recalculo de dividas corrigidas.",
+      "default": { "defer": "inflation_index_not_modeled" }
+    },
+    "TBL_MODELODOC": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "Um modelo de documento em HTML.",
+      "default": { "defer": "document_templates_not_modeled" }
+    },
+    "TBL_MODELODOCHISTORICO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "1.296 geracoes de documento a partir do modelo.",
+      "default": { "defer": "document_templates_not_modeled" }
+    },
+    "TBL_PAGAMENTO_FINANCEIRO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "23.961 contas a pagar (solicitacao, aprovacao, banco, PIX). Fora do dominio de recebiveis desta fase.",
+      "default": { "defer": "payables_not_modeled" }
+    },
+    "TBL_PROCESSO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "909 processos juridicos com escola, numero, status e honorarios.",
+      "default": { "defer": "legal_process_not_modeled" }
+    },
+    "TBL_PROCESSODETALHE": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "3.801 etapas/andamentos de processo.",
+      "default": { "defer": "legal_process_not_modeled" }
+    },
+    "TBL_PROCESSODIVIDA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "1.198 vinculos entre processo e divida.",
+      "default": { "defer": "legal_process_not_modeled" }
+    },
+    "TBL_PROCESSORESPONSAVEL": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "6 vinculos entre processo e usuario responsavel.",
+      "default": { "defer": "legal_process_not_modeled" }
+    },
+    "TBL_PUBLICACAODETALHE": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "3.625 detalhes de publicacao por processo.",
+      "default": { "defer": "legal_process_not_modeled" }
+    },
+    "TBL_PUBLICACOES": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "1.274 publicacoes capturadas.",
+      "default": { "defer": "legal_process_not_modeled" }
+    },
+    "TBL_RECALCULO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "5.164 registros de recalculo de divida por usuario/data.",
+      "default": { "defer": "recalculation_log_not_modeled" }
+    },
+    "TBL_ROTA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "327 linhas de roteirizacao de visitas a colegios.",
+      "default": { "defer": "route_not_modeled" }
+    },
+    "TBL_TAXAESCOLA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "1.182 taxas por escola/ano/tipo.",
+      "default": { "defer": "school_fee_not_modeled" }
+    },
+    "TBL_CATEGORIAFILHODRE": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "25 linhas do plano de contas do DRE (nivel filho, coluna TBL_CATEGORIAFILHODRE_DESCRICAO). Classificacao usada pelo extrato e pelo DRE; fora do dominio de recebiveis desta fase.",
+      "default": { "defer": "dre_not_modeled" }
+    },
+    "TBL_CATEGORIAPAGAMENTO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "315 categorias de pagamento (descricao, tipo, item de DRE, categoria pai/filha e linha do DRE). Classificacao de extrato e DRE gerencial.",
+      "default": { "defer": "dre_not_modeled" }
+    },
+    "TBL_CATEGORIAPAIDRE": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "8 linhas do nivel pai do plano de contas do DRE.",
+      "default": { "defer": "dre_not_modeled" }
+    },
+    "TBL_CATEGORIAPRODUTO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "Aba com o nome exato da tabela esta vazia (nenhum cabecalho, nenhuma linha). O conteudo esta em TBL_CATEGORIAPRODUTO_FINANCEIRO; a app le CATEGORIAPRODUTO_DESCRICAO em Screen_CadProduto.",
+      "default": { "defer": "no_canonical_destination" }
+    },
+    "TBL_CATEGORIAPRODUTO_FINANCEIRO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "Aba irma de TBL_CATEGORIAPRODUTO: 2 categorias de produto, exportadas com as colunas tecnicas do SharePoint ao lado de CATEGORIAPRODUTO_DESCRICAO. Catalogo de produto nao esta modelado nesta fase.",
+      "default": { "defer": "no_canonical_destination" }
+    },
+    "TBL_DREAUX": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "366 linhas de apoio do DRE (categoria, classificacao, demonstrativo, subcategoria, linha e empresa).",
+      "default": { "defer": "dre_not_modeled" }
+    },
+    "TBL_DREBASE": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "80 linhas de estrutura/plano do DRE (modelo, item, categoria, grupo e subgrupo).",
+      "default": { "defer": "dre_not_modeled" }
+    },
+    "TBL_DREVALOR": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "3.095 valores de DRE por empresa/ano/mes e item (budget x realizado).",
+      "default": { "defer": "dre_not_modeled" }
+    },
+    "TBL_EXTRATO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "Aba com o nome exato da tabela esta vazia (nenhum cabecalho, nenhuma linha). Os 29 campos de TBL_EXTRATO usados pela app estao em TBL_EXTRATO_FINANCEIRO.",
+      "default": { "defer": "billing_integration_not_modeled" }
+    },
+    "TBL_EXTRATO_FINANCEIRO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "39.944 lancamentos de extrato e unica origem dos 29 campos de TBL_EXTRATO lidos pela app (Screen_CadExtrato, Screen_Financeiro, aprovacao). Export com as colunas tecnicas do SharePoint antes das colunas de negocio.",
+      "default": { "defer": "billing_integration_not_modeled" }
+    },
+    "TBL_EXTRATOOLD_FINANCEIRO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "64.451 lancamentos da tabela antiga TBL_EXTRATOOLD, que nao tem aba com o proprio nome. Cobre os 16 campos que a app le nessa tabela em Screen_CadExtrato_Old; historico a conciliar com TBL_EXTRATO antes de qualquer carga.",
+      "default": { "defer": "billing_integration_not_modeled" }
+    },
+    "TBL_FABRICANTE": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "4 fabricantes de produto usados em Screen_CadProduto.",
+      "default": { "defer": "no_canonical_destination" }
+    },
+    "TBL_FLUXOCAIXA": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "13.016 linhas de fluxo de caixa (conta, data, valor e chave data+conta).",
+      "default": { "defer": "billing_integration_not_modeled" }
+    },
+    "TBL_FORNECEDOR": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "3 fornecedores de contas a pagar. A planilha traz FORNECEDOR_NOME e uma coluna tecnica extra (ID2).",
+      "default": { "defer": "payables_not_modeled" }
+    },
+    "TBL_HISTORICO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "156 linhas de historico de alteracoes (tipo, mudanca e data) sem entidade alvo; auditoria canonica nova e independente.",
+      "default": { "defer": "no_canonical_destination" }
+    },
+    "TBL_HORAATUALIZADO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "Uma linha de controle com o horario da ultima atualizacao dos relatorios e do fluxo de caixa.",
+      "default": { "defer": "no_canonical_destination" }
+    },
+    "TBL_ITEMDRE": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "15 linhas do DRE (descricao, selecionavel e ordem) usadas para montar o demonstrativo.",
+      "default": { "defer": "dre_not_modeled" }
+    },
+    "TBL_LOGIN": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "78 logins do legado (usuario, senha, nome, tipo, nivel e email). Nenhuma credencial migra: LOGIN_PASS e senha em texto claro e o restante so entraria com email novo e senha redefinida.",
+      "columns": [
+        { "match": "LOGIN_PASS", "ignore": "secret_revoked", "note": "senha do legado em texto claro; revogar na origem" },
+        { "match": "LOGIN_USER", "defer": "user_import_requires_credential_reset" },
+        { "match": "LOGIN_EMAIL", "defer": "user_import_requires_credential_reset" }
+      ],
+      "default": { "defer": "user_import_requires_credential_reset" }
+    },
+    "TBL_PEDIDO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "5.080 pedidos/aprovacoes de compra (solicitante, descricao, valor total, datas, status, desconto, tipo, pagamento direto e categoria). Alimenta Screen_Aprovacaopedido; contas a pagar ficam fora do dominio desta fase.",
+      "default": { "defer": "payables_not_modeled" }
+    },
+    "TBL_SUBITEMEXTRATO": {
+      "target_entity": null,
+      "row_kind": "deferred",
+      "notes": "7 subitens de extrato (descricao, lancamento de origem, categoria, valor e valor pago) usados no rateio do lancamento.",
+      "default": { "defer": "billing_integration_not_modeled" }
+    }
+  }
+}

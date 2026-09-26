@@ -1,0 +1,4 @@
+# Python tooling for the legacy migration scripts (run from the monorepo root).
+# Install with:  python -m pip install -r scripts/requirements.txt
+openpyxl>=3.1
+psycopg[binary]>=3.2

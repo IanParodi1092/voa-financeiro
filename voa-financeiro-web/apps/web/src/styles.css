@@ -1,0 +1,8 @@
+:root { font-family: Georgia, 'Times New Roman', serif; color: #10202b; }
+body { margin: 0; }
+p { font-family: 'Segoe UI', sans-serif; color: #52636a; }
+button p { margin: 8px 0 0; text-align: left; }
+ul { margin: 24px 0 0; padding: 0; list-style: none; }
+li { display: flex; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid #d8e4de; font-family: 'Segoe UI', sans-serif; }
+li span { color: #52636a; }
+.school-select { width: 100%; min-height: 32px; padding: 6px 10px; border: 1px solid #8a999f; border-radius: 2px; background: #fff; color: #10202b; font: inherit; }

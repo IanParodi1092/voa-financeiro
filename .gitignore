@@ -1,0 +1,37 @@
+# --- segredos / variaveis de ambiente -------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- fontes legadas (arquivo morto, fora do versionamento) ----------------
+# Inclui root-exports/VOA.xlsx (~132 MB), backups, exports do PowerApps e a
+# solucao Dataverse descompactada. O auditor e o stager leem esses arquivos do
+# disco; eles nao sao versionados.
+_legacy-powerapps/
+
+# --- dependencias e artefatos de build ------------------------------------
+node_modules/
+dist/
+build/
+coverage/
+.next/
+*.tsbuildinfo
+
+# --- ambientes virtuais e caches Python -----------------------------------
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- ferramentas locais do editor/CLI -------------------------------------
+.config/
+.sixth/
+.vscode/*
+!.vscode/extensions.json
+
+# --- saidas de execucao ---------------------------------------------------
+*.log
+scripts/_tmp/
