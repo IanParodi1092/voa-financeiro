@@ -6,7 +6,7 @@
 - O importador dry-run grava somente `migration_batches`, `migration_rows`, `migration_errors` e `reconciliation_reports`.
 - Nenhuma escola, cliente, aluno, acordo, parcela, pagamento ou cobranca canonica e criada nesse modo.
 - Senhas, API keys e tokens sao substituidos por `[REDACTED]` antes de persistir o payload.
-- O lote completo `VOA.xlsx` da revisao anterior (419.700 linhas em 39 abas) esta em staging no Supabase e ja passou por validacao. A revisao de 2026-09-25 20:01 (`VOA.xlsx`, **60 abas e 546.346 linhas**) **esta estagiada e validada no Postgres local** (lote `4609c071-03c3-47fb-beff-5c3bcad6367e`), com o dicionario conferido (`0` divergencia de coluna e `1` aba vazia) e o dry-run da carga canonica fechando: 104.685 linhas ja existentes no canonico + **24 novas** em `contacts`. O commit canonico segue pendente porque o Supabase entrou em somente-leitura por cota de disco - ver "Incidente de disco no staging" e "Staging local + canonico no Supabase".
+- O lote completo `VOA.xlsx` da revisao anterior (419.700 linhas em 39 abas) esta em staging no Supabase e ja passou por validacao. A revisao de 2026-09-25 20:01 (`VOA.xlsx`, **60 abas e 546.346 linhas**) **esta estagiada e validada no Postgres local** (lote `4609c071-03c3-47fb-beff-5c3bcad6367e`), com o dicionario conferido (`0` divergencia de coluna e `1` aba vazia) e a carga canonica (fase 7) **executada e commitada no Postgres local** (104.709 linhas, lote marcado `committed`); o ensaio revelou e corrigiu um erro de ordenacao das abas que descartava 24 contatos - ver "Carga canonica local da revisao de 20:01". O mesmo commit no Supabase segue pendente porque ele entrou em somente-leitura por cota de disco - ver "Incidente de disco no staging" e "Staging local + canonico no Supabase".
 - A validacao registra achados por aba/campo, marca linhas com erro e atualiza `reconciliation_reports`.
 - O relatorio consolidado da ultima validacao esta em `docs/STAGING_VALIDATION_REPORT.md`.
 - O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 30 `map`, 76 `ignore`, 713 `defer` e 37 `review`.
@@ -432,9 +432,62 @@ Leitura do dry-run, tabela a tabela (`novas` x `reutilizadas`):
   (`LOAD_REFERENCE_UNRESOLVED` em `CLIENTEENDTEL_CLIENTE_ID`: 7.648; `LOAD_REQUIRED_FIELD_EMPTY` em
   `Pagamento_Listagem.Valor_Pago`: 8.243; `LOAD_AGGREGATE_MISSING` nos 63 acordos sem parcela).
 
-Para fechar a fase 7 resta o `--commit` no Supabase, que continua **somente-leitura** por cota de
-disco (ver "Incidente de disco no staging"). Se o operador preferir, o mesmo `--commit` roda contra o
-banco local (as duas conexoes no container) para ensaiar a carga inteira sem tocar o Supabase.
+Com o Supabase ainda em somente-leitura, o `--commit` foi executado **contra o banco local** (as duas
+conexoes no mesmo container): e o ensaio completo da fase 7, sem tocar no Supabase.
+
+### Carga canonica local da revisao de 20:01 (ensaio completo, 2026-09-26)
+
+```powershell
+# as duas conexoes no banco local: staging e canonico no mesmo container (split: false)
+Remove-Item Env:DATABASE_URL,Env:STAGING_DATABASE_URL -ErrorAction SilentlyContinue
+$env:DIRECT_DATABASE_URL  = "postgresql://postgres:SENHA@localhost:5434/voa_staging"
+$env:STAGING_DATABASE_URL = $env:DIRECT_DATABASE_URL
+python scripts\load_canonical_batch.py --commit --set-batch-status committed `
+  --staging-url $env:DIRECT_DATABASE_URL `
+  --report docs\CANONICAL_LOAD_REPORT.md --json-out "$env:TEMP\voa_commit.json"
+```
+
+Sempre passar `--staging-url` explicito: uma variavel de ambiente remanescente no shell ja
+redirecionou a leitura do canonico numa rodada anterior (o `reused` virou 0 e o relatorio apontou o
+banco errado).
+
+| Etapa | Resultado |
+|---|---|
+| Roteamento | `{"staging": "localhost:5434/voa_staging", "canonical": "localhost:5434/voa_staging", "split": false}` - uma conexao, uma transacao, o caminho historico |
+| Carga | `docs/CANONICAL_LOAD_REPORT.md` regerado: 121.991 linhas avaliadas, **104.709 carregadas** (24 novas + 104.685 reutilizadas), 17.282 descartadas, 20 achados, `asaas_charges` bloqueada (`required_columns_uncovered`), exit 4 |
+| Lote | `4609c071-03c3-47fb-beff-5c3bcad6367e` -> `committed` (546.346 linhas) |
+| Canonico local | `schools` 75, `customers` 26.264, `contacts` 46.829, `students` 6.641, `agreements` 1.505, `asaas_customers` 1.120, `installments` 15.259, `payments` 7.016 = **104.709 linhas** |
+| Totais | `agreements.total_amount` 7.161.716,00 = `installments.original_amount` 7.161.716,00; `payments.amount` 3.594.788,37; `payments.retained_amount` 924.781,71 |
+| Integridade | 0 contatos sem `customer_id`; o segundo `--commit` inseriu apenas as 24 linhas que faltavam e reutilizou as outras 104.685 (idempotencia provada em rodada real) |
+
+#### Correcao de ordenacao das abas encontrada pelo ensaio
+
+O primeiro `--commit` carregou **46.805 contatos** (24 abaixo do plano) e o segundo, depois da
+correcao, 46.829. Causa: `sheet_order()` ordenava as abas so pela tabela primaria
+(`LOAD_ORDER` = `schools`, `customers`, `contacts`, `students`, `agreements`, ...), entao
+`TBL_CLIENTEENDTEL` (`contacts`) rodava **antes** de `TBL_PAGAMENTO` (`agreements`), que tambem cria
+`customers`. Os 4 clientes que existem apenas ali (`625`, `1123`, `1293`, `1505`) chegavam tarde e os
+24 contatos que os referenciam eram descartados como `LOAD_REFERENCE_UNRESOLVED` (7.672 em vez de
+7.648). O dry-run nao mostrava o problema porque o preload do canonico ja tinha os 26.264 clientes; num
+banco vazio a perda era real. Agora `sheet_order(sheet_plan, plan)` espera **todos** os produtores de
+uma tabela referenciada, com fallback para a ordem por tabela primaria quando ha ciclo, coberto por
+`test_sheet_order_waits_for_every_producer_of_a_referenced_table` e
+`test_sheet_order_survives_a_dependency_cycle`.
+
+#### Ensaio local x canonico atual do Supabase
+
+| Metrica | Supabase hoje | Ensaio local |
+|---|---:|---:|
+| `contacts` | 46.805 | **46.829** |
+| `agreements` / `schools` | 1.506 / 76 | 1.505 / 75 |
+| `agreements.total_amount` | 7.163.078,48 | **7.161.716,00** |
+| `installments.original_amount` | 7.161.716,00 | 7.161.716,00 |
+| linhas sem `legacy_source` | 3 (`schools`, `customers`, `agreements`) | 0 |
+
+O Supabase carrega 3 linhas sem proveniencia (criadas fora da migracao) e uma divergencia de
+**R$ 1.362,48** entre `agreements.total_amount` e `installments.original_amount`; o ensaio local fecha
+exatamente. Liberado o disco, a recomendacao e reaplicar a revisao no Supabase (ou reconciliar as 3
+linhas e os 24 contatos) antes do cutover - a decisao e do operador.
 
 ## Pendencias de entrada ainda abertas
 
@@ -442,6 +495,7 @@ banco local (as duas conexoes no container) para ensaiar a carga inteira sem toc
 - `users`: entrada exige politica de credencial (`TBL_USER` nao tem coluna mapeada);
 - `students.customer_id`: `TBL_ALUNO` nao tem vinculo com o cliente; os 6.641 alunos ficam sem `customer_id` ate essa decisao;
 - as 2 linhas de teste sem `legacy_source` (`schools` = 1, `customers` = 1) continuam no banco e poluem a reconciliacao (`schools` 76 no canonico para 75 linhas legadas).
+- canonico do Supabase: segue em somente-leitura por cota de disco e, quando for liberado, precisa receber a revisao (hoje tem 3 linhas sem `legacy_source` e a divergencia de R$ 1.362,48 entre `agreements.total_amount` e `installments.original_amount`, alem de estar 24 contatos atras do ensaio local).
 
 ## Entrada de uma aba/arquivo financeiro novo (boletos, payables, cobranca)
 

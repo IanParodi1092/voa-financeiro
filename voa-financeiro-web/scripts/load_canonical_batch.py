@@ -37,6 +37,11 @@ Rules enforced by this loader:
    staged payloads of the source sheet, deduplicated by `unique_by` (mirroring the child
    `UNIQUE` constraint) and reported as `LOAD_AGGREGATE_MISSING` when a parent row has no
    aggregate to read.
+10. Sheets run only after **every** sheet that produces a table they reference, not merely
+    after the first one: `contacts` waits for `TBL_PAGAMENTO` as well as `TBL_CLIENTE`,
+    because `TBL_PAGAMENTO` creates customers the other sheet does not cover. Without that
+    rule a fresh (empty) database loses those rows as `LOAD_REFERENCE_UNRESOLVED`, while a
+    rerun against a populated canonical would resolve them.
 
 Exit codes: 0 loaded as requested, 1 structural problem, 3 staging problem,
 4 partial load (some requested entity is blocked).
@@ -1954,12 +1959,53 @@ def persist_batch_status(cursor: Any, state: LoadState, status: str | None) -> N
     )
 
 
-def sheet_order(sheet_plan: dict[str, dict[str, Any]]) -> list[str]:
+def sheet_order(
+    sheet_plan: dict[str, dict[str, Any]], plan: dict[str, TablePlan]
+) -> list[str]:
+    """Order the sheets so a provider of a referenced table always loads before its consumers.
+
+    The primary-table order (`LOAD_ORDER`) decides the daily sequence, but a sheet that consumes a
+    table has to wait for **every** sheet that produces it. `TBL_PAGAMENTO` also creates `customers`
+    (rows the other sheets do not cover), so the sheet that loads `contacts` must run after it;
+    otherwise the reference cannot resolve in a database that is still empty, and the row is
+    discarded as `LOAD_REFERENCE_UNRESOLVED` while a rerun against a populated canonical resolves it.
+    """
+
     def sort_key(sheet: str) -> tuple[int, str]:
         primary = sheet_plan[sheet].get("primary")
         return (entity_order(primary) if primary else len(LOAD_ORDER), sheet)
 
-    return sorted(sheet_plan, key=sort_key)
+    providers: dict[str, list[str]] = {}
+    for sheet, entry in sheet_plan.items():
+        for table in entry.get("tables", []):
+            providers.setdefault(table, []).append(sheet)
+
+    pending: dict[str, set[str]] = {}
+    for sheet, entry in sheet_plan.items():
+        waiting: set[str] = set()
+        for table in entry.get("tables", []):
+            target = plan.get(table)
+            if target is None:
+                continue
+            for dependency in target.dependencies:
+                waiting.update(
+                    producer for producer in providers.get(dependency, []) if producer != sheet
+                )
+        pending[sheet] = waiting
+
+    order: list[str] = []
+    while pending:
+        ready = sorted((sheet for sheet, waiting in pending.items() if not waiting), key=sort_key)
+        if not ready:
+            # dependency cycle: keep the primary-table order instead of stalling the load
+            order.extend(sorted(pending, key=sort_key))
+            break
+        for sheet in ready:
+            order.append(sheet)
+            del pending[sheet]
+            for waiting in pending.values():
+                waiting.discard(sheet)
+    return order
 
 
 def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
@@ -2066,7 +2112,7 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 flush=True,
             )
 
-        for sheet in sheet_order(sheet_plan):
+        for sheet in sheet_order(sheet_plan, plan):
             entry = sheet_plan[sheet]
             ready_tables = [table for table in entry.get("tables", []) if plan[table].status == "ready"]
             if not ready_tables:
@@ -2191,6 +2237,15 @@ def render_report(result: dict[str, Any]) -> str:
     if database:
         metrics.append(f"| Staging | `{database.get('staging', 'n/a')}` |")
         metrics.append(f"| Canonico | `{database.get('canonical', 'n/a')}` |")
+        metrics.append(
+            "| Topologia | "
+            + (
+                "staging em banco separado do canonico"
+                if database.get("split")
+                else "staging e canonico no mesmo banco"
+            )
+            + " |"
+        )
     metrics.extend(
         [
             f"| Entidades prontas | {summary['ready_tables']} |",

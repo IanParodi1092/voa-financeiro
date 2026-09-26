@@ -568,8 +568,145 @@ class PlanTests(unittest.TestCase):
 
     def test_sheet_order_uses_primary_table_order(self) -> None:
         plan_data = plan_of(DICTIONARY)
-        order = sheet_order(plan_data["sheets"])
+        order = sheet_order(plan_data["sheets"], plan_data["tables"])
         self.assertEqual(order[:3], ["SHEET_SCHOOL", "SHEET_CONTACT", "SHEET_STUDENT"])
+
+    def test_sheet_order_waits_for_every_producer_of_a_referenced_table(self) -> None:
+        """`contacts` waits for every sheet that creates `customers`, not only the first one.
+
+        `TBL_PAGAMENTO` creates customers the `TBL_CLIENTE` sheet does not cover, so loading
+        contacts before it discards those rows on an empty database as `LOAD_REFERENCE_UNRESOLVED`.
+        """
+        dictionary = {
+            "version": 1,
+            "source_name": "TEST.xlsx",
+            "sheets": {
+                "SHEET_CLIENTE": {
+                    "target_entity": "customers",
+                    "columns": [
+                        {
+                            "match": "ID",
+                            "map": "customers.legacy_id",
+                            "type": "legacy_id",
+                            "normalization": "trim",
+                            "required": True,
+                            "provides_legacy_id_for": "customers",
+                        },
+                        {
+                            "match": "Nome",
+                            "map": "customers.full_name",
+                            "type": "name",
+                            "normalization": "trim",
+                            "required": True,
+                        },
+                    ],
+                },
+                "SHEET_CONTATO": {
+                    "target_entity": "contacts",
+                    "columns": [
+                        {
+                            "match": "ClienteID",
+                            "map": "contacts.customer_id",
+                            "type": "reference",
+                            "ref": "customers",
+                            "normalization": "trim",
+                            "required": True,
+                        },
+                        {
+                            "match": "Tipo",
+                            "map": "contacts.type",
+                            "type": "code",
+                            "normalization": "value_map_ci",
+                            "required": True,
+                            "values": {"telefone": "phone"},
+                        },
+                        {
+                            "match": "Valor",
+                            "map": "contacts.value",
+                            "type": "text",
+                            "normalization": "trim",
+                            "required": True,
+                        },
+                    ],
+                },
+                "SHEET_PAGAMENTO": {
+                    "target_entity": "agreements",
+                    "columns": [
+                        {
+                            "match": "ID",
+                            "map": "agreements.legacy_id",
+                            "type": "legacy_id",
+                            "normalization": "trim",
+                            "required": True,
+                            "provides_legacy_id_for": "agreements",
+                        },
+                        {
+                            "match": "Cliente",
+                            "map": "customers.full_name",
+                            "type": "name",
+                            "normalization": "trim",
+                        },
+                    ],
+                },
+            },
+        }
+        plan_data = plan_of(dictionary)
+        order = sheet_order(plan_data["sheets"], plan_data["tables"])
+        self.assertEqual(order, ["SHEET_CLIENTE", "SHEET_PAGAMENTO", "SHEET_CONTATO"])
+
+    def test_sheet_order_survives_a_dependency_cycle(self) -> None:
+        """Two sheets that reference each other fall back to the primary-table order."""
+        dictionary = {
+            "version": 1,
+            "source_name": "TEST.xlsx",
+            "sheets": {
+                "SHEET_A": {
+                    "target_entity": "agreements",
+                    "columns": [
+                        {
+                            "match": "ID",
+                            "map": "agreements.legacy_id",
+                            "type": "legacy_id",
+                            "normalization": "trim",
+                            "required": True,
+                            "provides_legacy_id_for": "agreements",
+                        },
+                        {
+                            "match": "Cliente",
+                            "map": "agreements.customer_id",
+                            "type": "reference",
+                            "ref": "contacts",
+                            "required": True,
+                        },
+                    ],
+                },
+                "SHEET_B": {
+                    "target_entity": "contacts",
+                    "columns": [
+                        {
+                            "match": "Acordo",
+                            "map": "contacts.customer_id",
+                            "type": "reference",
+                            "ref": "agreements",
+                            "required": True,
+                        },
+                        {
+                            "match": "Tipo",
+                            "map": "contacts.type",
+                            "type": "code",
+                            "normalization": "value_map_ci",
+                            "required": True,
+                            "values": {"telefone": "phone"},
+                        },
+                    ],
+                },
+            },
+        }
+        plan_data = plan_of(dictionary)
+        self.assertIn("DEPENDENCY_CYCLE", [item["code"] for item in plan_data["problems"]])
+        order = sheet_order(plan_data["sheets"], plan_data["tables"])
+        self.assertEqual(order, ["SHEET_B", "SHEET_A"])
+        self.assertEqual(sorted(order), ["SHEET_A", "SHEET_B"])
 
 
 
@@ -1721,6 +1858,43 @@ class DatabaseRoutingTests(unittest.TestCase):
         report = render_report(result)
         self.assertIn("| Staging | `localhost:5433/voa_staging` |", report)
         self.assertIn("| Canonico | `localhost:5432/postgres` |", report)
+        self.assertIn("| Topologia | staging em banco separado do canonico |", report)
+
+
+class ReportTopologyTests(unittest.TestCase):
+    """The report states whether staging and canonical share one database."""
+
+    def test_same_database_topology_is_reported(self):
+        result = {
+            "mode": "dry-run",
+            "legacy_source": "powerapps-voa",
+            "batch": {"id": "5cd769e4", "source_name": "VOA.xlsx", "status": "staging"},
+            "database": {
+                "staging": "localhost:5434/voa_staging",
+                "canonical": "localhost:5434/voa_staging",
+                "split": False,
+            },
+            "summary": {
+                "ready_tables": 0,
+                "blocked_tables": 0,
+                "rows_considered": 0,
+                "rows_loaded": 0,
+                "rows_inserted": 0,
+                "rows_reused": 0,
+                "rows_skipped": 0,
+                "findings": 0,
+                "canonical_writes": False,
+            },
+            "tables": {},
+            "models": {"ready": [], "blocked": []},
+            "plan": {},
+            "sheets": [],
+            "aggregates": {},
+            "findings": [],
+        }
+        report = render_report(result)
+        self.assertIn("| Topologia | staging e canonico no mesmo banco |", report)
+        self.assertNotIn("banco separado", report)
 
 
 if __name__ == "__main__":
