@@ -15,10 +15,10 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | Entidades bloqueadas | 1 |
 | Linhas legadas avaliadas | 121991 |
 | Linhas carregadas | 104709 |
-| Linhas novas | 24 |
-| Linhas reutilizadas (idempotencia) | 104685 |
+| Linhas novas | 0 |
+| Linhas reutilizadas (idempotencia) | 104709 |
 | Linhas descartadas | 17282 |
-| Achados registrados | 20 |
+| Achados registrados | 21 |
 | Escrita canonica nesta rodada | sim |
 
 ## Plano por entidade canonica
@@ -26,12 +26,12 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | Tabela | Situacao | Motivo | Dependencias | Colunas mapeadas | Obrigatorias sem cobertura |
 |---|---|---|---|---:|---|
 | `agreements` | ready |  | customers, schools, students | 6 | nenhuma |
-| `asaas_charges` | blocked | required_columns_uncovered (asaas_customer_id, billing_type, due_date, environment, status, value) | installments | 4 | asaas_customer_id, billing_type, due_date, environment, status, value |
+| `asaas_charges` | blocked | required_columns_uncovered (asaas_customer_id, billing_type, due_date, environment, value) | installments | 5 | asaas_customer_id, billing_type, due_date, environment, value |
 | `asaas_customers` | ready |  | customers | 3 | nenhuma |
 | `contacts` | ready |  | customers | 3 | nenhuma |
 | `customers` | ready |  | - | 3 | nenhuma |
 | `installments` | ready |  | agreements | 4 | nenhuma |
-| `payments` | ready |  | installments | 4 | nenhuma |
+| `payments` | ready |  | installments | 9 | nenhuma |
 | `schools` | ready |  | - | 4 | nenhuma |
 | `students` | ready |  | schools | 4 | nenhuma |
 
@@ -113,16 +113,16 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 
 ## Resultado por tabela
 
-| Tabela | Legadas | Carregadas | Novas | Reusadas | Descartadas | Motivos de descarte |
-|---|---:|---:|---:|---:|---:|---|
-| `agreements` | 1572 | 1505 | 0 | 1505 | 67 | LOAD_AGGREGATE_MISSING=63, LOAD_ROW_LINK_UNRESOLVED=4 |
-| `asaas_customers` | 1572 | 1120 | 0 | 1120 | 452 | LOAD_DUPLICATE_ROW=2, LOAD_REQUIRED_FIELD_EMPTY=446, LOAD_ROW_LINK_UNRESOLVED=4 |
-| `contacts` | 54782 | 46829 | 24 | 46805 | 7953 | LOAD_REFERENCE_UNRESOLVED=7648, LOAD_REQUIRED_FIELD_EMPTY=305 |
-| `customers` | 26268 | 26264 | 0 | 26264 | 4 | LOAD_REQUIRED_FIELD_EMPTY=4 |
-| `installments` | 15535 | 15259 | 0 | 15259 | 276 | LOAD_DUPLICATE_ROW=263, LOAD_REFERENCE_UNRESOLVED=3, LOAD_REQUIRED_FIELD_EMPTY=10 |
-| `payments` | 15535 | 7016 | 0 | 7016 | 8519 | LOAD_REQUIRED_FIELD_EMPTY=8243, LOAD_ROW_LINK_UNRESOLVED=276 |
-| `schools` | 75 | 75 | 0 | 75 | 0 | - |
-| `students` | 6652 | 6641 | 0 | 6641 | 11 | LOAD_REFERENCE_UNRESOLVED=1, LOAD_REQUIRED_FIELD_EMPTY=10 |
+| Tabela | Legadas | Carregadas | Novas | Reusadas | Atualizadas | Descartadas | Motivos de descarte |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `agreements` | 1572 | 1505 | 0 | 1505 | 0 | 67 | LOAD_AGGREGATE_MISSING=63, LOAD_ROW_LINK_UNRESOLVED=4 |
+| `asaas_customers` | 1572 | 1120 | 0 | 1120 | 0 | 452 | LOAD_DUPLICATE_ROW=2, LOAD_REQUIRED_FIELD_EMPTY=446, LOAD_ROW_LINK_UNRESOLVED=4 |
+| `contacts` | 54782 | 46829 | 0 | 46829 | 0 | 7953 | LOAD_REFERENCE_UNRESOLVED=7648, LOAD_REQUIRED_FIELD_EMPTY=305 |
+| `customers` | 26268 | 26264 | 0 | 26264 | 0 | 4 | LOAD_REQUIRED_FIELD_EMPTY=4 |
+| `installments` | 15535 | 15259 | 0 | 15259 | 0 | 276 | LOAD_DUPLICATE_ROW=263, LOAD_REFERENCE_UNRESOLVED=3, LOAD_REQUIRED_FIELD_EMPTY=10 |
+| `payments` | 15535 | 7016 | 0 | 7016 | 0 | 8519 | LOAD_REQUIRED_FIELD_EMPTY=8243, LOAD_ROW_LINK_UNRESOLVED=276 |
+| `schools` | 75 | 75 | 0 | 75 | 0 | 0 | - |
+| `students` | 6652 | 6641 | 0 | 6641 | 0 | 11 | LOAD_REFERENCE_UNRESOLVED=1, LOAD_REQUIRED_FIELD_EMPTY=10 |
 
 ## Totais monetarios por tabela
 
@@ -132,6 +132,7 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | `installments` | `original_amount` | 7161716.00 |
 | `payments` | `amount` | 3594788.37 |
 | `payments` | `retained_amount` | 924781.71 |
+| `payments` | `retention_percentage` | 1762.3887 |
 
 ## Achados
 
@@ -152,6 +153,7 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | TBL_PAGAMENTO | `LOAD_ROW_LINK_UNRESOLVED` | agreements.customer_id -> customers | 4 | linha 236: agreements: vinculo da propria linha nao resolvido; linha 1480: agreements: vinculo da propria linha nao resolvido; linha 1482: agreements: vinculo da propria linha nao resolvido |
 | TBL_PAGAMENTO | `LOAD_ROW_LINK_UNRESOLVED` | asaas_customers.customer_id -> customers | 4 | linha 236: asaas_customers: vinculo da propria linha nao resolvido; linha 1480: asaas_customers: vinculo da propria linha nao resolvido; linha 1482: asaas_customers: vinculo da propria linha nao resolvido |
 | TBL_PAGAMENTO_LISTAGEM | `LOAD_DUPLICATE_ROW` | agreement_id+installment_number | 263 | linha 950: installments: agreement_id+installment_number ja existe no canonico (linha TBL_PAGAMENTO_LISTAGEM.950); linha 951: installments: agreement_id+installment_number ja existe no canonico (linha TBL_PAGAMENTO_LISTAGEM.951); linha 952: installments: agreement_id+installment_number ja existe no canonico (linha TBL_PAGAMENTO_LISTAGEM.952) |
+| TBL_PAGAMENTO_LISTAGEM | `LOAD_MONTH_YEAR_UNPARSEABLE` | Pagamento_Lista.MesAnoProgramacaoRepasse | 1 | linha 13255: valor legado '10' descartado em payments.retention_scheduled_month |
 | TBL_PAGAMENTO_LISTAGEM | `LOAD_REFERENCE_UNRESOLVED` | Pagamento_Listagem.Pagamento.ID | 3 | linha 10312: installments: Pagamento_Listagem.Pagamento.ID=912 sem registro em agreements; linha 10884: installments: Pagamento_Listagem.Pagamento.ID=1704 sem registro em agreements; linha 13333: installments: Pagamento_Listagem.Pagamento.ID=33 sem registro em agreements |
 | TBL_PAGAMENTO_LISTAGEM | `LOAD_REQUIRED_FIELD_EMPTY` | Pagamento_Listagem.Pagamento.ID | 6 | linha 13439: installments: Pagamento_Listagem.Pagamento.ID vazio na origem; linha 13440: installments: Pagamento_Listagem.Pagamento.ID vazio na origem; linha 13441: installments: Pagamento_Listagem.Pagamento.ID vazio na origem |
 | TBL_PAGAMENTO_LISTAGEM | `LOAD_REQUIRED_FIELD_EMPTY` | Pagamento_Listagem.Parcela_Numero | 4 | linha 11566: installments: Pagamento_Listagem.Parcela_Numero vazio apos normalizacao; linha 13053: installments: Pagamento_Listagem.Parcela_Numero vazio apos normalizacao; linha 13064: installments: Pagamento_Listagem.Parcela_Numero vazio apos normalizacao |
@@ -165,7 +167,7 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | `agreements` | 1505 | 1505 |
 | `asaas_charges` | 0 | 0 |
 | `asaas_customers` | 1120 | 1120 |
-| `contacts` | 46805 | 46829 |
+| `contacts` | 46829 | 46829 |
 | `customers` | 26264 | 26264 |
 | `installments` | 15259 | 15259 |
 | `payments` | 7016 | 7016 |
@@ -174,4 +176,4 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 
 ## Bloqueios e proximos passos
 
-- `asaas_charges`: required_columns_uncovered (asaas_customer_id, billing_type, due_date, environment, status, value)
+- `asaas_charges`: required_columns_uncovered (asaas_customer_id, billing_type, due_date, environment, value)

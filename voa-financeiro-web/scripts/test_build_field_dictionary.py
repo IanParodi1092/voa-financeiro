@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -25,6 +26,22 @@ from build_field_dictionary import (  # noqa: E402
 )
 
 SCHEMA = {"schools": {"id", "legal_name", "document_number"}, "customers": {"id", "full_name"}}
+
+SECRET_WORDS = {"pass", "password", "senha", "apikey"}
+
+
+def name_words(name: str) -> set[str]:
+    """Split a legacy column name into lowercase words.
+
+    `USER_PASS` reads as `{user, pass}` while `MesAnoProgramacaoRepasse` reads as
+    `{mes, ano, programacao, repasse}`: the secret check has to run word by word, otherwise
+    "repasse" would look like a password.
+    """
+    words: set[str] = set()
+    for part in re.split(r"[^A-Za-z0-9]+", name):
+        words.update(re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+", part))
+    return {word.lower() for word in words if word}
+
 
 MINIMAL_DICTIONARY = {
     "version": 1,
@@ -349,14 +366,25 @@ class RealDictionaryTests(unittest.TestCase):
         self.assertEqual(providers["customers"], ["TBL_CLIENTE.ID", "TBL_PAGAMENTO.ID"])
 
     def test_no_legacy_secret_is_mapped(self) -> None:
+        """Credenciais do legado nunca chegam a uma coluna canonica.
+
+        A comparacao e palavra por palavra: `Pagamento_Lista.MesAnoProgramacaoRepasse` nao e uma
+        senha, mas `USER_PASS` continua sendo.
+        """
         for sheet, report in self.resolved.items():
             for column in report["columns"]:
                 if column["decision"] != MAP:
                     continue
-                name = column["column"].lower()
-                self.assertNotIn("senha", name)
-                self.assertNotIn("pass", name)
-                self.assertNotIn("apikey", name)
+                words = name_words(column["column"])
+                self.assertFalse(
+                    words & SECRET_WORDS, f"{sheet}.{column['column']} parece uma credencial"
+                )
+
+    def test_secret_names_are_recognised_word_by_word(self) -> None:
+        self.assertEqual(name_words("USER_PASS") & SECRET_WORDS, {"pass"})
+        self.assertEqual(name_words("USER_SENHA") & SECRET_WORDS, {"senha"})
+        self.assertEqual(name_words("BANCO_APIKEY") & SECRET_WORDS, {"apikey"})
+        self.assertEqual(name_words("Pagamento_Lista.MesAnoProgramacaoRepasse") & SECRET_WORDS, set())
 
     def test_open_decisions_stay_blocked(self) -> None:
         reasons = {item.get("reason") for item in self.validation["policy"]}

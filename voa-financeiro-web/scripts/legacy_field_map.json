@@ -32,7 +32,9 @@
     "value_map": "traduz valores legados com o mapa `values` do proprio campo",
     "value_map_ci": "traduz valores legados com `values`, ignorando caixa e acentos da chave",
     "min_positive": "descarta valores menores ou iguais a zero",
-    "positive_integer": "converte para inteiro e descarta valores menores ou iguais a zero"
+    "positive_integer": "converte para inteiro e descarta valores menores ou iguais a zero",
+    "fraction": "converte fracao de 0 a 1 (virgula decimal, `%` ou ruido de float) e recusa o que sai da faixa",
+    "month_year": "converte `MM AAAA` (ou `AAAA-MM`) para o texto canonico `AAAA-MM`"
   },
   "reason_codes": {
     "legacy_audit_only": "auditoria do PowerApps/Dataverse (Created/Modified/By); a auditoria canonica nova e independente",
@@ -80,13 +82,11 @@
     "schema_gap_pending": "exige migration nova ou ajuste de schema antes da carga canonica"
   },
   "schema_gaps": {
-    "installments_legacy_id": "installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration 0007",
+    "installments_legacy_id": "installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration nova",
     "installments_description": "installments nao tem descricao/tipo do debito (Divida_Listagem.Tipo_de_debito, Obs)",
     "agreements_source_resolution": "agreements.legacy_id precisa vir de uma unica origem (TBL_PAGAMENTO ou TBL_DIVIDA); decisao pendente",
     "agreements_type": "agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO)",
     "agreements_closed_at": "agreements nao tem data de fechamento/assinatura",
-    "payments_retention_approval": "retencao e repasse nao tem datas de aprovacao, programacao e realizacao",
-    "payments_charge_status": "payments/asaas_charges nao tem mapa de status de boleto do legado",
     "schools_contact_address": "schools nao tem contato nem endereco; contacts e restrito a customers",
     "students_contact": "students nao tem contato proprio; contacts e restrito a customers",
     "customers_address": "customers nao tem endereco estruturado",
@@ -290,12 +290,13 @@
         { "match": "Pagamento_PagAsaas_ID", "map": "asaas_charges.external_id", "type": "text", "normalization": "trim", "status": "confirmed", "note": "6.369 distintos = unico na origem" },
         { "match": "Pagamento_LinkPag", "map": "asaas_charges.invoice_url", "type": "url", "normalization": "trim", "status": "confirmed" },
         { "match": "Pagamento_CopiaeCola", "map": "asaas_charges.pix_qr_code", "type": "text", "normalization": "trim", "status": "confirmed" },
-        { "match": "Pagamento_Lista.Status", "review": "status_map_unconfirmed", "gap": "payments_retention_approval", "note": "5 rotulos, todos preenchidos (15.535 linhas): AGUARDANDO APROVACAO 7.524, REPASSE REALIZADO 6.993, NAO EXISTE REPASSE 744, PAGAMENTO DIRETO 176, REPASSE APROVADO 98. Proposta do operador (25/09), aguardando a migration 0007: AGUARDANDO APROVACAO > pending_approval, REPASSE APROVADO > approved, REPASSE REALIZADO > released, NAO EXISTE REPASSE > not_applicable, PAGAMENTO DIRETO > direct_payment; destino payments.retention_status" },
-        { "match": "Pagamento_Banco_Status", "review": "status_map_unconfirmed", "gap": "payments_charge_status", "note": "9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). Proposta do operador (25/09): BAIXADO/PAGO AUTOMATICO/PAGAMENTO MANUAL/PAGO COLEGIO > paid, CARTAO ITAU > paid com billing_type CREDIT_CARD, PENDENTE > pending, ATRASADO > overdue, vazio > unknown e `z` descartado como invalid_label (1 linha em migration_errors); destino asaas_charges.status" },
-        { "match": "Pagamento_Lista.DataAprovacao", "review": "schema_gap_pending", "gap": "payments_retention_approval" },
-        { "match": "Pagamento_Lista.MesAnoProgramacaoRepasse", "review": "schema_gap_pending", "gap": "payments_retention_approval" },
-        { "match": "Pagamento_Lista.MesAnoRepasseRealizado", "review": "schema_gap_pending", "gap": "payments_retention_approval" },
-        { "match": "Pagamento_Lista.PorcentagemAcordo", "review": "semantics_unclear", "gap": "payments_retention_approval", "note": "7.080 preenchidos, 76 valores distintos entre 0 e 0,35: e a fracao de retencao usada na formula de ValorRetido (min(valor_pago * percentual, meta da escola)). Proposta do operador (25/09), aguardando a migration 0007: payments.retention_percentage numeric(5,4)" },
+        { "match": "Pagamento_Lista.Status", "map": "payments.retention_status", "type": "code", "normalization": "value_map_ci", "status": "confirmed", "values": { "aguardando aprovacao": "pending_approval", "repasse aprovado": "approved", "repasse realizado": "released", "nao existe repasse": "not_applicable", "pagamento direto": "direct_payment" }, "note": "5 rotulos, todos preenchidos (15.535 linhas): AGUARDANDO APROVACAO 7.524, REPASSE REALIZADO 6.993, NAO EXISTE REPASSE 744, PAGAMENTO DIRETO 176, REPASSE APROVADO 98. Destino criado pela migration 0008 (lacuna payments_retention_approval), com o CHECK de rotulos na coluna" },
+        { "match": "Pagamento_Banco_Status", "map": "asaas_charges.status", "type": "code", "normalization": "value_map_ci", "required": true, "status": "confirmed", "values": { "baixado": "paid", "pago automatico": "paid", "pagamento manual": "paid", "pago colegio": "paid", "cartao itau": "paid", "pendente": "pending", "atrasado": "overdue" }, "note": "9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). O vazio e o `z` caem no DEFAULT 'unknown' criado pela migration 0008 e saem como LOAD_VALUE_DEFAULTED; CARTAO ITAU entra como paid e o billing_type CREDIT_CARD fica registrado como decisao de operacao em docs/MIGRATION_WORKFLOW.md" },
+        { "match": "Pagamento_Lista.DataAprovacao", "map": "payments.retention_approved_at", "type": "date", "normalization": "iso_date", "status": "confirmed", "note": "7.091 preenchidos (2020-11-09 a 2026-03-30); o legado grava datetime ISO (`2024-06-04T00:00:00`) e a normalizacao usa a parte da data" },
+        { "match": "Pagamento_Lista.MesAnoProgramacaoRepasse", "map": "payments.retention_scheduled_month", "type": "text", "normalization": "month_year", "status": "confirmed", "note": "7.087 preenchidos no formato `MM AAAA` (`09 2024`, 01 2021 a 12 2025); a normalizacao `month_year` entrega `AAAA-MM` como o CHECK de payments.retention_scheduled_month exige" },
+        { "match": "Pagamento_Lista.MesAnoRepasseRealizado", "map": "payments.retention_released_at", "type": "date", "normalization": "iso_date", "status": "confirmed", "note": "6.875 preenchidos (2020-12-07 a 2026-03-06) como datetime ISO: apesar do nome, a coluna guarda a data em que o repasse foi realizado" },
+        { "match": "Pagamento_Lista.PorcentagemAcordo", "map": "payments.retention_percentage", "type": "numeric", "normalization": "fraction", "status": "confirmed", "note": "7.080 preenchidos, 76 valores distintos entre 0 e 0,35: e a fracao de retencao de min(valor_pago * percentual, meta da escola). A normalizacao `fraction` aceita virgula decimal e ruido de float (0,25000001 > 0.2500) e recusa o que sai de 0..1" },
+
         { "match": "Pagamento_Lista_ValorSucumbencia", "defer": "agreement_attrs_not_modeled" },
         { "match": "Pagamento_Lista.InicioDivida", "ignore": "computed_cache", "note": "ano de inicio da divida, derivavel de installments" },
         { "match": "Pagamento_Lista.TipoAcordo", "defer": "agreement_attrs_not_modeled", "gap": "agreements_type" },

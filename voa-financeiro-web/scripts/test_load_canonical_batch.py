@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS contacts (
 
 ALTER TABLE schools
   ADD COLUMN IF NOT EXISTS notes text DEFAULT 'n/a';
+
+ALTER TABLE contacts ALTER COLUMN type SET DEFAULT 'unknown';
 """
 
 TEXT = {"not_null": False, "has_default": False, "default": None}
@@ -401,6 +403,27 @@ class SchemaParsingTests(unittest.TestCase):
         self.assertIn("installments_count", required_columns("agreements", schema))
         self.assertNotIn("status", required_columns("agreements", schema))
 
+    def test_alter_column_default_from_a_later_migration_is_read(self) -> None:
+        """`ALTER TABLE ... ALTER COLUMN ... SET DEFAULT` clears a column from the required set."""
+        schema = parse_canonical_columns(Path(self.temp.name))
+        self.assertTrue(schema["contacts"]["type"]["has_default"])
+        self.assertEqual(schema["contacts"]["type"]["default"], "'unknown'")
+        self.assertNotIn("type", required_columns("contacts", schema))
+        self.assertEqual(resolve_defaults(schema, {"contacts": None})["contacts"]["type"], "unknown")
+
+    def test_alter_column_drop_default_restores_the_required_gate(self) -> None:
+        extra = Path(self.temp.name) / "0002_change.sql"
+        extra.write_text(
+            "ALTER TABLE contacts\n"
+            "  ALTER COLUMN is_primary DROP DEFAULT,\n"
+            "  ALTER COLUMN value SET NOT NULL;\n",
+            encoding="utf-8",
+        )
+        schema = parse_canonical_columns(Path(self.temp.name))
+        self.assertFalse(schema["contacts"]["is_primary"]["has_default"])
+        self.assertIn("is_primary", required_columns("contacts", schema))
+        self.assertTrue(schema["contacts"]["value"]["not_null"])
+
     def test_quote_identifier_rejects_injection(self) -> None:
         self.assertEqual(quote_identifier("schools"), "schools")
         with self.assertRaises(LoadAborted):
@@ -461,6 +484,31 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(convert_value("0", rule), (None, None))
         self.assertEqual(convert_value("-2", rule), (None, None))
         self.assertEqual(convert_value("1/12", rule), (None, "LOAD_INTEGER_UNPARSEABLE"))
+
+    def test_fraction_accepts_brazilian_decimal_and_float_noise(self) -> None:
+        rule = a_rule(normalization="fraction")
+        self.assertEqual(str(convert_value("0,25", rule)[0]), "0.2500")
+        self.assertEqual(str(convert_value("0,35", rule)[0]), "0.3500")
+        self.assertEqual(str(convert_value("0,25000001", rule)[0]), "0.2500")
+        self.assertEqual(str(convert_value("25%", rule)[0]), "0.2500")
+        self.assertEqual(str(convert_value(0.15, rule)[0]), "0.1500")
+
+    def test_fraction_refuses_values_outside_the_range(self) -> None:
+        rule = a_rule(normalization="fraction")
+        value, finding = convert_value("1,5", rule)
+        self.assertIsNone(value)
+        self.assertEqual(finding, "LOAD_FRACTION_UNPARSEABLE")
+        self.assertIsNone(convert_value("25", rule)[0])
+        self.assertIsNone(convert_value("-0,1", rule)[0])
+
+    def test_month_year_normalises_the_legacy_format(self) -> None:
+        rule = a_rule(normalization="month_year")
+        self.assertEqual(convert_value("09 2024", rule)[0], "2024-09")
+        self.assertEqual(convert_value("9/2024", rule)[0], "2024-09")
+        self.assertEqual(convert_value("2024-09", rule)[0], "2024-09")
+        value, finding = convert_value("13 2024", rule)
+        self.assertIsNone(value)
+        self.assertEqual(finding, "LOAD_MONTH_YEAR_UNPARSEABLE")
 
     def test_normalize_key_strips_accents(self) -> None:
         self.assertEqual(normalize_key("Não Ação"), "NAO ACAO")
@@ -533,6 +581,47 @@ class PlanTests(unittest.TestCase):
         }
         problems = plan_of(broken)["problems"]
         self.assertIn("TARGET_COLUMN_UNKNOWN", [item["code"] for item in problems])
+
+    def test_column_normalization_must_be_implemented_and_declared(self) -> None:
+        unknown = {
+            "sheets": {
+                "SHEET_A": {
+                    "target_entity": "schools",
+                    "columns": [
+                        {
+                            "match": "X",
+                            "map": "schools.legal_name",
+                            "type": "name",
+                            "normalization": "inventada",
+                        }
+                    ],
+                }
+            }
+        }
+        self.assertIn(
+            "COLUMN_NORMALIZATION_UNKNOWN",
+            [item["code"] for item in plan_of(unknown)["problems"]],
+        )
+        undeclared = {
+            "normalizations": {"trim": "remove espacos nas pontas"},
+            "sheets": {
+                "SHEET_A": {
+                    "target_entity": "schools",
+                    "columns": [
+                        {
+                            "match": "X",
+                            "map": "schools.legal_name",
+                            "type": "name",
+                            "normalization": "digits",
+                        }
+                    ],
+                }
+            },
+        }
+        self.assertIn(
+            "COLUMN_NORMALIZATION_UNDECLARED",
+            [item["code"] for item in plan_of(undeclared)["problems"]],
+        )
 
     def test_wildcard_default_map_is_rejected(self) -> None:
         broken = {"sheets": {"SHEET_A": {"default": {"map": "schools.legal_name", "type": "name"}}}}
@@ -789,8 +878,10 @@ class StoreRowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.plan = plan_of(DICTIONARY, allow_proposed={"contacts"})["tables"]
 
-    def state(self, commit: bool) -> LoadState:
-        return LoadState(legacy_source="powerapps-voa", batch_id="batch-1", commit=commit)
+    def state(self, commit: bool, enrich: bool = False) -> LoadState:
+        return LoadState(
+            legacy_source="powerapps-voa", batch_id="batch-1", commit=commit, enrich=enrich
+        )
 
     def outcome(self, legacy_id: str | None = "9", **values) -> RowOutcome:
         outcome = RowOutcome(values=dict(values))
@@ -857,6 +948,82 @@ class StoreRowTests(unittest.TestCase):
         self.assertEqual(cursor.statements, [])
         self.assertEqual(state.stats("schools").reused, 1)
         self.assertEqual(state.row_ids["schools"], "uuid-existente")
+
+    def test_reused_row_is_enriched_when_the_operator_asks(self) -> None:
+        """A column added by a later migration gets filled on rows an earlier run stored."""
+        cursor = FakeCursor(rowcount=1)
+        state = self.state(commit=True, enrich=True)
+        state.provenance_keys["schools"] = {("SHEET_SCHOOL", "9"): "uuid-existente"}
+        store_row(
+            cursor,
+            "SHEET_SCHOOL",
+            5,
+            "schools",
+            self.outcome(legal_name="Escola A"),
+            self.plan["schools"],
+            SCHEMA,
+            state.legacy_source,
+            state,
+        )
+        statement, params = cursor.statements[0]
+        self.assertTrue(statement.startswith("UPDATE schools SET"))
+        self.assertIn("legal_name = COALESCE(legal_name, %s)", statement)
+        self.assertIn("WHERE id = %s AND (legal_name IS NULL)", statement)
+        self.assertEqual(params[-1], "uuid-existente")
+        stats = state.stats("schools")
+        self.assertEqual(stats.reused, 1)
+        self.assertEqual(stats.enriched, 1)
+
+    def test_enrichment_is_skipped_without_commit(self) -> None:
+        cursor = FakeCursor(rowcount=1)
+        state = self.state(commit=False, enrich=True)
+        state.provenance_keys["schools"] = {("SHEET_SCHOOL", "9"): "uuid-existente"}
+        store_row(
+            cursor,
+            "SHEET_SCHOOL",
+            5,
+            "schools",
+            self.outcome(legal_name="Escola A"),
+            self.plan["schools"],
+            SCHEMA,
+            state.legacy_source,
+            state,
+        )
+        self.assertEqual(cursor.statements, [])
+        self.assertEqual(state.stats("schools").enriched, 0)
+
+    def test_enrichment_counts_only_rows_with_an_empty_column(self) -> None:
+        cursor = FakeCursor(rowcount=0)
+        state = self.state(commit=True, enrich=True)
+        state.provenance_keys["schools"] = {("SHEET_SCHOOL", "9"): "uuid-existente"}
+        store_row(
+            cursor,
+            "SHEET_SCHOOL",
+            5,
+            "schools",
+            self.outcome(legal_name="Escola A"),
+            self.plan["schools"],
+            SCHEMA,
+            state.legacy_source,
+            state,
+        )
+        self.assertEqual(state.stats("schools").enriched, 0)
+        self.assertEqual(state.stats("schools").reused, 1)
+
+    def test_deterministic_rows_are_enriched_too(self) -> None:
+        cursor = FakeCursor(results=[(str(row_uuid("SHEET_CONTACT", 7)),)], rowcount=1)
+        state = self.state(commit=True, enrich=True)
+        target = self.plan["contacts"]
+        outcome = self.outcome(
+            legacy_id=None, customer_id="customer-uuid", type="phone", value="11 99999-0000"
+        )
+        store_row(cursor, "SHEET_CONTACT", 7, "contacts", outcome, target, SCHEMA, state.legacy_source, state)
+        seen = len(cursor.statements)
+        store_row(cursor, "SHEET_CONTACT", 7, "contacts", outcome, target, SCHEMA, state.legacy_source, state)
+        new_statements = [sql for sql, _ in cursor.statements[seen:]]
+        self.assertEqual(len(new_statements), 1)
+        self.assertTrue(new_statements[0].startswith("UPDATE contacts SET"))
+        self.assertEqual(state.stats("contacts").enriched, 1)
 
     def test_rows_without_legacy_id_are_skipped(self) -> None:
         cursor = FakeCursor()
@@ -1137,8 +1304,33 @@ class RealDictionaryTests(unittest.TestCase):
         self.assertEqual(charges.blocked_reason, "required_columns_uncovered")
         self.assertEqual(
             sorted(charges.missing_required),
-            ["asaas_customer_id", "billing_type", "due_date", "environment", "status", "value"],
+            ["asaas_customer_id", "billing_type", "due_date", "environment", "value"],
         )
+
+    def test_the_charge_status_default_comes_from_the_migration(self) -> None:
+        """0008 gives `asaas_charges.status` a DEFAULT, so an empty invoice status is not an error.
+
+        The 4.799 blank labels of `Pagamento_Banco_Status` (and the single `z` junk label) fall back
+        to that default, reported as LOAD_VALUE_DEFAULTED instead of dropping the row.
+        """
+        self.assertNotIn("status", required_columns("asaas_charges", self.schema))
+        defaults = resolve_defaults(self.schema, {"asaas_charges": None})
+        self.assertEqual(defaults["asaas_charges"]["status"], "unknown")
+
+    def test_retention_columns_are_mapped_by_the_migration(self) -> None:
+        payments = self.tables["payments"]
+        self.assertEqual(payments.status, "ready")
+        for column in (
+            "retention_status",
+            "retention_percentage",
+            "retention_approved_at",
+            "retention_scheduled_month",
+            "retention_released_at",
+        ):
+            self.assertIn(column, payments.rules, column)
+            self.assertTrue(
+                all(rule.status == "confirmed" for rule in payments.rules[column]), column
+            )
 
     def test_installments_link_payments_to_the_same_row(self) -> None:
         self.assertEqual(self.tables["payments"].links, {"installment_id": "installments"})
@@ -1745,7 +1937,7 @@ class ReportTests(unittest.TestCase):
         report = render_report(self.result())
         self.assertIn("# Carga canonica do legado (fase 7)", report)
         self.assertIn("| Modo | dry-run |", report)
-        self.assertIn("| `schools` | 10 | 10 | 10 | 0 | 0 | - |", report)
+        self.assertIn("| `schools` | 10 | 10 | 10 | 0 | 0 | 0 | - |", report)
         self.assertIn("| `schools` | 1 | 11 |", report)
 
     def test_report_lists_blockers_and_findings(self) -> None:
@@ -1773,6 +1965,7 @@ class ReportTests(unittest.TestCase):
         summary = summarize(self.result())
         self.assertEqual(summary["ready_tables"], 1)
         self.assertEqual(summary["rows_loaded"], 10)
+        self.assertEqual(summary["rows_enriched"], 0)
         self.assertFalse(summary["canonical_writes"])
 
     def test_canonical_counts_include_child_tables(self) -> None:

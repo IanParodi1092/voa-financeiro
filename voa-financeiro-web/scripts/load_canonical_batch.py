@@ -42,6 +42,15 @@ Rules enforced by this loader:
     because `TBL_PAGAMENTO` creates customers the other sheet does not cover. Without that
     rule a fresh (empty) database loses those rows as `LOAD_REFERENCE_UNRESOLVED`, while a
     rerun against a populated canonical would resolve them.
+11. A column rule may only use a normalization implemented here (`SUPPORTED_NORMALIZATIONS`) and
+    declared in the dictionary (`normalizations`), so a typo is reported as a structural problem
+    instead of silently passing the raw legacy value through.
+12. `DEFAULT` clauses added by a later migration (`ALTER TABLE ... ALTER COLUMN ... SET DEFAULT`)
+    are read like the ones declared in the `CREATE TABLE`: that is what turns a `NOT NULL` column
+    into an optional one and gives the loader its `LOAD_VALUE_DEFAULTED` fallback.
+13. `--enrich-reused` (commit-only) completes rows that an earlier run already stored: a column
+    added by a later migration is filled where it is still NULL (`COALESCE`), so a stored value is
+    never overwritten. Without it a rerun only reuses rows and the new column stays empty.
 
 Exit codes: 0 loaded as requested, 1 structural problem, 3 staging problem,
 4 partial load (some requested entity is blocked).
@@ -115,6 +124,8 @@ LOADER_ERROR_CODES = (
     "LOAD_DATE_UNPARSEABLE",
     "LOAD_MONEY_UNPARSEABLE",
     "LOAD_INTEGER_UNPARSEABLE",
+    "LOAD_FRACTION_UNPARSEABLE",
+    "LOAD_MONTH_YEAR_UNPARSEABLE",
     "LOAD_LEGACY_ID_MISSING",
     "LOAD_TABLE_BLOCKED",
     "LOAD_REFERENCE_MULTIVALUE",
@@ -143,6 +154,26 @@ PROVENANCE_COLUMNS = ("legacy_source", "legacy_table", "legacy_id")
 UUID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "voa-financeiro-web:canonical-load")
 
 NUMBER_PATTERN = re.compile(r"^-?\d+(\.\d+)?$")
+
+SUPPORTED_NORMALIZATIONS = (
+    "none",
+    "trim",
+    "collapse_ws",
+    "digits",
+    "upper",
+    "normalize_name",
+    "iso_date",
+    "iso_datetime",
+    "money",
+    "integer",
+    "boolean_sim_nao",
+    "value_map",
+    "value_map_ci",
+    "min_positive",
+    "positive_integer",
+    "fraction",
+    "month_year",
+)
 
 
 class LoadAborted(RuntimeError):
@@ -287,11 +318,46 @@ def parse_canonical_columns(
                     item.strip(),
                     re.I | re.S,
                 )
-                if not add:
+                if add:
+                    name = add.group(1).lower()
+                    columns[name] = describe_column(f"{name}{add.group(2)}", name)
                     continue
-                name = add.group(1).lower()
-                columns[name] = describe_column(f"{name}{add.group(2)}", name)
+                apply_alter_column(columns, item)
     return tables
+
+
+def apply_alter_column(columns: dict[str, dict[str, Any]], item: str) -> bool:
+    """Apply a table-level `ALTER COLUMN` clause to the parsed columns of a table.
+
+    A default added by a later migration (instead of by the `CREATE TABLE` itself) is exactly what
+    makes a `NOT NULL` column optional for the loader, so `SET DEFAULT` has to be understood here
+    as well.
+    """
+    change = re.match(
+        r"alter\s+column\s+(?:if\s+exists\s+)?([a-z0-9_]+)\s+(.*)$", item.strip(), re.I | re.S
+    )
+    if not change:
+        return False
+    info = columns.get(change.group(1).lower())
+    if info is None:
+        return False
+    action = change.group(2)
+    default = re.search(r"set\s+default\s+(.+)$", action, re.I | re.S)
+    if default:
+        info["has_default"] = True
+        info["default"] = default.group(1).strip().rstrip(",")
+        return True
+    if re.search(r"drop\s+default", action, re.I):
+        info["has_default"] = False
+        info["default"] = None
+        return True
+    if re.search(r"set\s+not\s+null", action, re.I):
+        info["not_null"] = True
+        return True
+    if re.search(r"drop\s+not\s+null", action, re.I):
+        info["not_null"] = False
+        return True
+    return False
 
 
 def describe_column(item: str, name: str) -> dict[str, Any]:
@@ -593,6 +659,28 @@ def build_plan(
             parsed = column_rule(sheet, rule, problems)
             if parsed is None:
                 continue
+            if parsed.normalization is not None:
+                if parsed.normalization not in SUPPORTED_NORMALIZATIONS:
+                    problems.append(
+                        {
+                            "code": "COLUMN_NORMALIZATION_UNKNOWN",
+                            "sheet": sheet,
+                            "target": f"{parsed.table}.{parsed.column}",
+                            "normalization": str(parsed.normalization),
+                        }
+                    )
+                    continue
+                declared = dictionary.get("normalizations")
+                if isinstance(declared, dict) and declared and parsed.normalization not in declared:
+                    problems.append(
+                        {
+                            "code": "COLUMN_NORMALIZATION_UNDECLARED",
+                            "sheet": sheet,
+                            "target": f"{parsed.table}.{parsed.column}",
+                            "normalization": str(parsed.normalization),
+                        }
+                    )
+                    continue
             entries.setdefault(parsed.table, {}).setdefault(parsed.column, []).append(parsed)
             if parsed.provides_legacy_id_for:
                 providers.setdefault(parsed.provides_legacy_id_for, parsed)
@@ -831,6 +919,57 @@ def parse_money(value: Any) -> Decimal | None:
     return amount.quantize(Decimal("0.01"))
 
 
+def parse_fraction(value: Any) -> Decimal | None:
+    """Legacy retention fraction: `0,25`, `0.25`, `25%` or float noise, always within 0..1.
+
+    Anything outside 0..1 is refused instead of guessed: `payments.retention_percentage` is
+    `numeric(5,4)` with a CHECK, and a value that violates the CHECK would abort the transaction.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        amount = Decimal(str(value))
+    else:
+        text = str(value).strip().replace(" ", "")
+        if not text:
+            return None
+        percent = text.endswith("%")
+        text = text.rstrip("%").replace(",", ".")
+        if text.count(".") > 1:
+            return None
+        try:
+            amount = Decimal(text)
+        except (InvalidOperation, ValueError):
+            return None
+        if percent:
+            amount = amount / 100
+    if amount < 0 or amount > 1:
+        return None
+    return amount.quantize(Decimal("0.0001"))
+
+
+MONTH_YEAR_PATTERN = re.compile(r"^(\d{1,2})[/\-. ](\d{4})$|^(\d{4})[/\-. ](\d{1,2})$")
+
+
+def parse_month_year(value: Any) -> str | None:
+    """Legacy `MM AAAA` (or `AAAA-MM`) as the canonical `AAAA-MM` text."""
+    if isinstance(value, (date, datetime)):
+        return f"{value.year:04d}-{value.month:02d}"
+    text = str(value).strip()
+    if not text:
+        return None
+    match = MONTH_YEAR_PATTERN.match(text)
+    if not match:
+        return None
+    if match.group(1):
+        month, year = int(match.group(1)), int(match.group(2))
+    else:
+        year, month = int(match.group(3)), int(match.group(4))
+    if not 1 <= month <= 12:
+        return None
+    return f"{year:04d}-{month:02d}"
+
+
 def parse_date_value(value: Any) -> date | None:
     if isinstance(value, datetime):
         return value.date()
@@ -919,6 +1058,12 @@ def convert_value(raw: Any, rule: ColumnRule) -> tuple[Any, str | None]:
         if mapped is None:
             return None, "LOAD_VALUE_UNMAPPED"
         return mapped, None
+    if normalization == "fraction":
+        parsed = parse_fraction(raw)
+        return (parsed, None) if parsed is not None else (None, "LOAD_FRACTION_UNPARSEABLE")
+    if normalization == "month_year":
+        parsed = parse_month_year(raw)
+        return (parsed, None) if parsed is not None else (None, "LOAD_MONTH_YEAR_UNPARSEABLE")
     if normalization == "min_positive":
         parsed = parse_money(raw)
         if parsed is None:
@@ -1131,6 +1276,7 @@ class TableStats:
     rows_considered: int = 0
     inserted: int = 0
     reused: int = 0
+    enriched: int = 0
     skipped: int = 0
     skip_reasons: dict[str, int] = field(default_factory=dict)
     numeric_totals: dict[str, Decimal] = field(default_factory=dict)
@@ -1150,6 +1296,7 @@ class LoadState:
     legacy_source: str
     batch_id: str
     commit: bool
+    enrich: bool = False
     tables: dict[str, TableStats] = field(default_factory=dict)
     legacy_maps: dict[str, dict[str, Any]] = field(default_factory=dict)
     provenance_keys: dict[str, dict[tuple[str, str], Any]] = field(default_factory=dict)
@@ -1330,6 +1477,33 @@ def insert_canonical(
     return (None if row is None else str(row[0])), None
 
 
+def enrich_reused_row(
+    cursor: Any,
+    table: str,
+    identifier: str,
+    values: dict[str, Any],
+) -> bool:
+    """Fill the mapped columns that are still NULL in an already stored row.
+
+    A rerun reuses the row by its legacy key and, without this step, a column added by a later
+    migration would stay empty forever. `COALESCE` guarantees the stored value always wins, so the
+    statement is idempotent and can never rewrite canonical data; it is a commit-only write.
+    """
+    columns = sorted(column for column in values if column != "id")
+    if not columns:
+        return False
+    for column in columns:
+        quote_identifier(column)
+    assignments = ", ".join(f"{column} = COALESCE({column}, %s)" for column in columns)
+    empty = " OR ".join(f"{column} IS NULL" for column in columns)
+    cursor.execute(
+        f"UPDATE {quote_identifier(table)} SET {assignments} "
+        f"WHERE id = %s AND ({empty})",
+        [values[column] for column in columns] + [identifier],
+    )
+    return (cursor.rowcount or 0) > 0
+
+
 def reject_row(
     state: LoadState,
     table: str,
@@ -1373,6 +1547,10 @@ def store_row(
             state.legacy_maps.setdefault(table, {})[legacy_id] = existing
             state.row_ids[table] = existing
             stats.ids.append(str(existing))
+            if state.enrich and state.commit and enrich_reused_row(
+                cursor, table, str(existing), outcome.values
+            ):
+                stats.enriched += 1
             return True
         identifier = str(uuid.uuid4())
         values = {
@@ -1439,6 +1617,8 @@ def store_row(
         stats.reused += 1
         state.row_ids[table] = identifier
         stats.ids.append(identifier)
+        if state.enrich and state.commit and enrich_reused_row(cursor, table, identifier, outcome.values):
+            stats.enriched += 1
         return True
     values = {"id": identifier, **outcome.values}
     duplicate = unique_conflict(state, table, values)
@@ -2093,7 +2273,12 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         cursor = connection.cursor()
         staging_cursor = staging_connection.cursor() if staging_connection else cursor
         batch = find_batch(staging_cursor, dictionary, args)
-        state = LoadState(legacy_source=legacy_source, batch_id=batch["id"], commit=args.commit)
+        state = LoadState(
+            legacy_source=legacy_source,
+            batch_id=batch["id"],
+            commit=args.commit,
+            enrich=args.enrich_reused,
+        )
         state.unique_groups = unique_groups
         counts_tables = canonical_tables_for_counts(plan)
         state.canonical_before = snapshot_canonical_counts(cursor, counts_tables)
@@ -2150,6 +2335,7 @@ def run_load(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 "loaded": stats.loaded,
                 "inserted": stats.inserted,
                 "reused": stats.reused,
+                "enriched": stats.enriched,
                 "skipped": stats.skipped,
                 "skip_reasons": stats.skip_reasons,
                 "totals": {column: str(value) for column, value in sorted(stats.numeric_totals.items())},
@@ -2209,6 +2395,7 @@ def summarize(result: dict[str, Any]) -> dict[str, Any]:
         "rows_loaded": sum(item["loaded"] for item in tables.values()),
         "rows_inserted": sum(item["inserted"] for item in tables.values()),
         "rows_reused": sum(item["reused"] for item in tables.values()),
+        "rows_enriched": sum(item.get("enriched", 0) for item in tables.values()),
         "rows_skipped": sum(item["skipped"] for item in tables.values()),
         "findings": len(result["findings"]),
         "canonical_writes": result["canonical_writes"],
@@ -2323,13 +2510,13 @@ def render_report(result: dict[str, Any]) -> str:
 
     lines.append("## Resultado por tabela")
     lines.append("")
-    lines.append("| Tabela | Legadas | Carregadas | Novas | Reusadas | Descartadas | Motivos de descarte |")
-    lines.append("|---|---:|---:|---:|---:|---:|---|")
+    lines.append("| Tabela | Legadas | Carregadas | Novas | Reusadas | Atualizadas | Descartadas | Motivos de descarte |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---|")
     for table, entry in sorted(result["tables"].items()):
         reasons = ", ".join(f"{code}={count}" for code, count in sorted(entry["skip_reasons"].items()))
         lines.append(
             f"| `{table}` | {entry['rows_considered']} | {entry['loaded']} | {entry['inserted']} | "
-            f"{entry['reused']} | {entry['skipped']} | {reasons or '-'} |"
+            f"{entry['reused']} | {entry.get('enriched', 0)} | {entry['skipped']} | {reasons or '-'} |"
         )
     lines.append("")
     if any(entry["totals"] for entry in result["tables"].values()):
@@ -2416,6 +2603,15 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-rows-per-sheet", type=int, default=None)
     parser.add_argument("--commit", action="store_true", help="write canonical rows (default is a dry run)")
+    parser.add_argument(
+        "--enrich-reused",
+        dest="enrich_reused",
+        action="store_true",
+        help=(
+            "with --commit, also fill the mapped columns that are still NULL in rows reused by "
+            "their legacy key (never overwrites a stored value)"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="explicit no-op flag, for clarity in logs")
     parser.add_argument("--legacy-source", default=None, help="value stored in legacy_source")
     parser.add_argument(
@@ -2445,6 +2641,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_rows_per_sheet is not None and args.max_rows_per_sheet <= 0:
         print(json.dumps({"ok": False, "error": "--max-rows-per-sheet must be positive"}))
         return 1
+    if args.enrich_reused and not args.commit:
+        print(json.dumps({"ok": False, "error": "--enrich-reused requires --commit"}))
+        return 1
 
     try:
         exit_code, result = run_load(args)
@@ -2467,7 +2666,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"ready tables: {', '.join(result['models']['ready']) or '-'}")
     print(
         "rows: considered={rows_considered} loaded={rows_loaded} inserted={rows_inserted} "
-        "reused={rows_reused} skipped={rows_skipped}".format(**summary)
+        "reused={rows_reused} enriched={rows_enriched} skipped={rows_skipped}".format(**summary)
     )
     print(f"findings: {summary['findings']}")
     for table in result["models"]["blocked"]:

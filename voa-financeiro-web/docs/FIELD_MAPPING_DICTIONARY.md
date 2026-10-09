@@ -9,24 +9,22 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 |---|---:|
 | Abas inventariadas | 60 |
 | Colunas inventariadas | 856 |
-| Colunas com `map` | 30 |
+| Colunas com `map` | 36 |
 | Colunas `ignore` | 76 |
 | Colunas `defer` | 713 |
-| Colunas `review` | 37 |
+| Colunas `review` | 31 |
 | Colunas `unmapped` | 0 |
 | Problemas estruturais | 0 |
-| Itens de politica pendentes | 37 |
+| Itens de politica pendentes | 31 |
 
 ## Portao de aprovacao
 
 - Estrutural: OK. Todo mapa aponta para tabela/coluna existente no schema canonico.
-- Aprovacao: BLOQUEADA (37 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
+- Aprovacao: BLOQUEADA (31 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
 
 ## Conferencia staging x workbook
 
-| Aba | Tipo | Linhas no lote | Faltando no staging | Extra no staging |
-|---|---|---:|---:|---:|
-| TBL_EMAILLISTACONTATO | empty_sheet | 0 | 6 | 0 |
+Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging.
 
 ## Provedores de `legacy_id` por tabela canonica
 
@@ -57,7 +55,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | TBL_DIVIDA_LISTAGEM | `agreements` | 11 | 0 | 4 | 1 | 6 |
 | TBL_ESCOLA | `schools` | 16 | 5 | 5 | 6 | 0 |
 | TBL_PAGAMENTO | `agreements` | 24 | 5 | 7 | 10 | 2 |
-| TBL_PAGAMENTO_LISTAGEM | `installments` | 34 | 10 | 13 | 3 | 8 |
+| TBL_PAGAMENTO_LISTAGEM | `installments` | 34 | 16 | 13 | 3 | 2 |
 | TBL_USER | `users` | 13 | 0 | 3 | 9 | 1 |
 
 ## Detalhe por aba
@@ -1219,7 +1217,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 - Entidade canonica: installments
 - Tipo de linha: child
 - Observacoes: 15.535 parcelas de acordo. Origem confirmada de installments e payments (status `confirmed`, operador 25/09). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments/asaas_charges a parcela criada pela mesma linha de origem.
-- Colunas: 34 (map=10, ignore=13, defer=3, review=8, unmapped=0)
+- Colunas: 34 (map=16, ignore=13, defer=3, review=2, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
@@ -1231,24 +1229,24 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Pagamento_Listagem.Valor_Pago | map | payments.amount | numeric | min_positive | sim |  | 13.245 preenchidos; payments so existe quando o valor pago e > 0 (vazio/zero/negativo descarta a linha) |
 | Pagamento_Listagem.Data_Pagamento | map | payments.paid_at | datetime | iso_datetime |  |  | 11.983 preenchidos |
 | Pagamento_Listagem.Data_Vencimento | map | installments.due_date | date | iso_date | sim |  |  |
-| Pagamento_Lista.Status | review |  |  |  |  |  | 5 rotulos, todos preenchidos (15.535 linhas): AGUARDANDO APROVACAO 7.524, REPASSE REALIZADO 6.993, NAO EXISTE REPASSE 744, PAGAMENTO DIRETO 176, REPASSE APROVADO 98. Proposta do operador (25/09), aguardando a migration 0007: AGUARDANDO APROVACAO > pending_approval, REPASSE APROVADO > approved, REPASSE REALIZADO > released, NAO EXISTE REPASSE > not_applicable, PAGAMENTO DIRETO > direct_payment; destino payments.retention_status [gap: payments_retention_approval] |
-| Pagamento_Lista.DataAprovacao | review |  |  |  |  |  | schema_gap_pending [gap: payments_retention_approval] |
+| Pagamento_Lista.Status | map | payments.retention_status | code | value_map_ci |  |  | 5 rotulos, todos preenchidos (15.535 linhas): AGUARDANDO APROVACAO 7.524, REPASSE REALIZADO 6.993, NAO EXISTE REPASSE 744, PAGAMENTO DIRETO 176, REPASSE APROVADO 98. Destino criado pela migration 0008 (lacuna payments_retention_approval), com o CHECK de rotulos na coluna [valores: aguardando aprovacao->pending_approval, repasse aprovado->approved, repasse realizado->released, nao existe repasse->not_applicable, pagamento direto->direct_payment] |
+| Pagamento_Lista.DataAprovacao | map | payments.retention_approved_at | date | iso_date |  |  | 7.091 preenchidos (2020-11-09 a 2026-03-30); o legado grava datetime ISO (`2024-06-04T00:00:00`) e a normalizacao usa a parte da data |
 | Pagamento_Lista.ValorRetido | map | payments.retained_amount | numeric | money |  |  | retencao por parcela: min(valor_pago * percentual, meta da escola) |
-| Pagamento_Lista.MesAnoProgramacaoRepasse | review |  |  |  |  |  | schema_gap_pending [gap: payments_retention_approval] |
+| Pagamento_Lista.MesAnoProgramacaoRepasse | map | payments.retention_scheduled_month | text | month_year |  |  | 7.087 preenchidos no formato `MM AAAA` (`09 2024`, 01 2021 a 12 2025); a normalizacao `month_year` entrega `AAAA-MM` como o CHECK de payments.retention_scheduled_month exige |
 | Modified | ignore |  |  |  |  |  | legacy_audit_only |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
 | Pagamento_Listagem.Parcela_Numero | map | installments.installment_number | integer | positive_integer | sim |  | 15.534 preenchidos; a CHECK do schema exige > 0, entao 0/negativo e lixo e nao vira parcela (nem conta no agregado do acordo); unicidade por (agreement_id, installment_number) |
-| Pagamento_Lista.MesAnoRepasseRealizado | review |  |  |  |  |  | schema_gap_pending [gap: payments_retention_approval] |
+| Pagamento_Lista.MesAnoRepasseRealizado | map | payments.retention_released_at | date | iso_date |  |  | 6.875 preenchidos (2020-12-07 a 2026-03-06) como datetime ISO: apesar do nome, a coluna guarda a data em que o repasse foi realizado |
 | Pagamento_Lista.InicioDivida | ignore |  |  |  |  |  | ano de inicio da divida, derivavel de installments |
 | Pagamento_Lista.TipoAcordo | defer |  |  |  |  |  | agreement_attrs_not_modeled [gap: agreements_type] |
-| Pagamento_Lista.PorcentagemAcordo | review |  |  |  |  |  | 7.080 preenchidos, 76 valores distintos entre 0 e 0,35: e a fracao de retencao usada na formula de ValorRetido (min(valor_pago * percentual, meta da escola)). Proposta do operador (25/09), aguardando a migration 0007: payments.retention_percentage numeric(5,4) [gap: payments_retention_approval] |
+| Pagamento_Lista.PorcentagemAcordo | map | payments.retention_percentage | numeric | fraction |  |  | 7.080 preenchidos, 76 valores distintos entre 0 e 0,35: e a fracao de retencao de min(valor_pago * percentual, meta da escola). A normalizacao `fraction` aceita virgula decimal e ruido de float (0,25000001 > 0.2500) e recusa o que sai de 0..1 |
 | Pagamento_Lista.PGTColegio | ignore |  |  |  |  |  | 2 valores distintos (flag) |
 | Modified By | ignore |  |  |  |  |  | legacy_audit_only |
 | Pagamento_Lista_Vazio | ignore |  |  |  |  |  | computed_cache |
 | Pagamento_Listagem_Tipo | review |  |  |  |  |  | 15.063 preenchidos, 2 valores distintos |
 | Pagamento_Extrato_ID | defer |  |  |  |  |  | billing_integration_not_modeled |
 | Pagamento_Categoria | ignore |  |  |  |  |  | empty_column |
-| Pagamento_Banco_Status | review |  |  |  |  |  | 9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). Proposta do operador (25/09): BAIXADO/PAGO AUTOMATICO/PAGAMENTO MANUAL/PAGO COLEGIO > paid, CARTAO ITAU > paid com billing_type CREDIT_CARD, PENDENTE > pending, ATRASADO > overdue, vazio > unknown e `z` descartado como invalid_label (1 linha em migration_errors); destino asaas_charges.status [gap: payments_charge_status] |
+| Pagamento_Banco_Status | map | asaas_charges.status | code | value_map_ci | sim |  | 9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). O vazio e o `z` caem no DEFAULT 'unknown' criado pela migration 0008 e saem como LOAD_VALUE_DEFAULTED; CARTAO ITAU entra como paid e o billing_type CREDIT_CARD fica registrado como decisao de operacao em docs/MIGRATION_WORKFLOW.md [valores: baixado->paid, pago automatico->paid, pagamento manual->paid, pago colegio->paid, cartao itau->paid, pendente->pending, atrasado->overdue] |
 | Pagamento_PagAsaas_ID | map | asaas_charges.external_id | text | trim |  |  | 6.369 distintos = unico na origem |
 | Pagamento_CliAsaas_ID | ignore |  |  |  |  |  | empty_column |
 | Pagamento_LinkPag | map | asaas_charges.invoice_url | url | trim |  |  |  |
@@ -1522,13 +1520,11 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 | Gap | Descricao | Colunas legadas afetadas |
 |---|---|---:|
-| `installments_legacy_id` | installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration 0007 | 2 |
+| `installments_legacy_id` | installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration nova | 2 |
 | `installments_description` | installments nao tem descricao/tipo do debito (Divida_Listagem.Tipo_de_debito, Obs) | 2 |
 | `agreements_source_resolution` | agreements.legacy_id precisa vir de uma unica origem (TBL_PAGAMENTO ou TBL_DIVIDA); decisao pendente | 10 |
 | `agreements_type` | agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO) | 2 |
 | `agreements_closed_at` | agreements nao tem data de fechamento/assinatura | 1 |
-| `payments_retention_approval` | retencao e repasse nao tem datas de aprovacao, programacao e realizacao | 5 |
-| `payments_charge_status` | payments/asaas_charges nao tem mapa de status de boleto do legado | 1 |
 | `schools_contact_address` | schools nao tem contato nem endereco; contacts e restrito a customers | 10 |
 | `students_contact` | students nao tem contato proprio; contacts e restrito a customers | 21 |
 | `customers_address` | customers nao tem endereco estruturado | 7 |
@@ -1539,7 +1535,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 ### installments_legacy_id
 
-installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration 0007
+installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration nova
 
 Colunas: `TBL_DIVIDA_LISTAGEM.ID`, `TBL_PAGAMENTO_LISTAGEM.ID`.
 
@@ -1566,18 +1562,6 @@ Colunas: `TBL_PAGAMENTO.Pagamento.Tipo`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista
 agreements nao tem data de fechamento/assinatura
 
 Colunas: `TBL_PAGAMENTO.Pagamento_DataFechamento`.
-
-### payments_retention_approval
-
-retencao e repasse nao tem datas de aprovacao, programacao e realizacao
-
-Colunas: `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.Status`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.DataAprovacao`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.MesAnoProgramacaoRepasse`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.MesAnoRepasseRealizado`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.PorcentagemAcordo`.
-
-### payments_charge_status
-
-payments/asaas_charges nao tem mapa de status de boleto do legado
-
-Colunas: `TBL_PAGAMENTO_LISTAGEM.Pagamento_Banco_Status`.
 
 ### schools_contact_address
 
@@ -1627,9 +1611,8 @@ Colunas: `TBL_USER.ID`.
 |---|---|---:|---|---|
 | `REVIEW_REQUIRED` | `name_only_link_not_allowed` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.Responsavel_Financeiro` |
 | `REVIEW_REQUIRED` | `pending_policy` | 11 | TBL_DIVIDA, TBL_DIVIDA_LISTAGEM, TBL_ENDTEL | `TBL_DIVIDA.ID`, `TBL_DIVIDA.Divida.Aluno.ID`, `TBL_DIVIDA.Divida_Nome`, `TBL_DIVIDA.Divida.Pagamento.ID` |
-| `REVIEW_REQUIRED` | `schema_gap_pending` | 8 | TBL_CLIENTEENDTEL, TBL_DIVIDA_LISTAGEM, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM, TBL_USER | `TBL_CLIENTEENDTEL.ID`, `TBL_DIVIDA_LISTAGEM.ID`, `TBL_PAGAMENTO.Pagamento_DataFechamento`, `TBL_PAGAMENTO_LISTAGEM.ID` |
-| `REVIEW_REQUIRED` | `semantics_unclear` | 14 | TBL_ALUNO, TBL_AUXSUBIR, TBL_CLIENTE, TBL_DIVIDA_LISTAGEM, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM | `TBL_ALUNO.Aluno_AnoDivida`, `TBL_ALUNO.Aluno_Contrato`, `TBL_AUXSUBIR.Nome Escola2`, `TBL_AUXSUBIR.Endereco` |
-| `REVIEW_REQUIRED` | `status_map_unconfirmed` | 2 | TBL_PAGAMENTO_LISTAGEM | `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.Status`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Banco_Status` |
+| `REVIEW_REQUIRED` | `schema_gap_pending` | 5 | TBL_CLIENTEENDTEL, TBL_DIVIDA_LISTAGEM, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM, TBL_USER | `TBL_CLIENTEENDTEL.ID`, `TBL_DIVIDA_LISTAGEM.ID`, `TBL_PAGAMENTO.Pagamento_DataFechamento`, `TBL_PAGAMENTO_LISTAGEM.ID` |
+| `REVIEW_REQUIRED` | `semantics_unclear` | 13 | TBL_ALUNO, TBL_AUXSUBIR, TBL_CLIENTE, TBL_DIVIDA_LISTAGEM, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM | `TBL_ALUNO.Aluno_AnoDivida`, `TBL_ALUNO.Aluno_Contrato`, `TBL_AUXSUBIR.Nome Escola2`, `TBL_AUXSUBIR.Endereco` |
 | `REVIEW_REQUIRED` | `unreliable_document_source` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.CPFResponsavel` |
 
 ## Motivos registrados
@@ -1673,9 +1656,8 @@ Colunas: `TBL_USER.ID`.
 | ignore | `staging_helper` | 5 | aba auxiliar de carga manual/planilha; nao representa entidade do dominio |
 | review | `name_only_link_not_allowed` | 1 | vinculo somente por nome nao e permitido; exige documento ou revisao assistida |
 | review | `pending_policy` | 11 | decisao de negocio pendente registrada na fase 2 |
-| review | `schema_gap_pending` | 8 | exige migration nova ou ajuste de schema antes da carga canonica |
-| review | `semantics_unclear` | 14 | semantica legada nao documentada; exige confirmacao de negocio |
-| review | `status_map_unconfirmed` | 2 | rotulos de status do legado sem traducao confirmada para o status canonico |
+| review | `schema_gap_pending` | 5 | exige migration nova ou ajuste de schema antes da carga canonica |
+| review | `semantics_unclear` | 13 | semantica legada nao documentada; exige confirmacao de negocio |
 | review | `unreliable_document_source` | 1 | documento do legado com falha de validacao; nao pode vincular automaticamente |
 
 ## Avisos (nao bloqueiam)

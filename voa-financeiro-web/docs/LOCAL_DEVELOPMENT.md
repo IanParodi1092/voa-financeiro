@@ -55,6 +55,13 @@ npm run db:migrate      # aplica 0007_auth_refresh_tokens.sql (login com refresh
 npm run dev:api
 ```
 
+O `.env` do repositorio ja aponta `DATABASE_URL` e `DIRECT_DATABASE_URL` para esse container e guarda
+o endereco antigo do Supabase comentado logo acima das duas linhas: enquanto o Supabase estiver em
+somente-leitura, a API, as migrations e os scripts de carga falam com o canonico local sem nenhum
+override de shell (o `load_canonical_batch.py`, alias, le o canonico sempre de
+`DIRECT_DATABASE_URL`/`DATABASE_URL`, entao nao ha flag para troca-lo). Para voltar ao Supabase,
+descomente as duas linhas comentadas e comente as locais.
+
 Os testes de integracao de auth/RBAC usam **PostgreSQL descartavel**: as migrations rodam num schema
 temporario (`search_path`) que e removido no fim, entao o banco escolhido nao e alterado.
 

@@ -230,11 +230,12 @@ Levantamento feito direto no staging do lote `5cd769e4-eaaa-49bd-b5ba-7e03947e5e
 | `PAGO COLEGIO` | 439 | `paid` | |
 | `PAGAMENTO MANUAL` | 353 | `paid` | |
 | `CARTAO ITAU` | 151 | `paid` | unico caso de cartao; ver decisao de `billing_type` |
-| `z` | 1 | descartado | lixo de digitacao: sai como `LOAD_VALUE_UNMAPPED` (1 linha, nao bloqueia o lote) |
+| `z` | 1 | nao mapeado | lixo de digitacao: cai no `DEFAULT 'unknown'` e sai como `LOAD_VALUE_DEFAULTED` (1 linha, nao bloqueia o lote) |
 
 Os 8 rotulos de negocio colapsam em 4 valores canonicos (`paid`, `pending`, `overdue` e o
-`unknown` do vazio). O vazio e o `z` **nao** entram em `values`: o vazio depende de um `DEFAULT` no
-schema (item 1 abaixo) e o `z` deve aparecer como achado, nao como dado aceito.
+`unknown` do vazio e do `z`). O vazio e o `z` **nao** entram em `values`: os dois caem no
+`DEFAULT 'unknown'` criado na `asaas_charges.status` pela migration 0008 e sao reportados como
+`LOAD_VALUE_DEFAULTED` em vez de derrubar a linha.
 
 ### `Pagamento_Lista.Status` (repasse) -> `payments.retention_status`
 
@@ -248,34 +249,60 @@ schema (item 1 abaixo) e o `z` deve aparecer como achado, nao como dado aceito.
 
 Aqui o mapa cobre 100% da coluna: os 15.535 valores estao preenchidos, sem residuo.
 
-### O que falta para aplicar (nenhum item abaixo foi aplicado)
+### Aplicado na migration 0008 (2026-10-09)
 
-1. `asaas_charges.status` e `NOT NULL` **sem `DEFAULT`**. Com `required: false`, as 4.799 linhas
-   vazias ficariam sem valor e o `INSERT` canonico falharia; a migration 0007 precisa de
-   `ALTER TABLE asaas_charges ALTER COLUMN status SET DEFAULT 'unknown';` para que o vazio saia
-   como `LOAD_VALUE_DEFAULTED` (rastreado no relatorio de carga) em vez de erro;
-2. `Pagamento_Lista.Status`, `Pagamento_Lista.DataAprovacao`,
-   `Pagamento_Lista.MesAnoProgramacaoRepasse` e `Pagamento_Lista.MesAnoRepasseRealizado` estao sem
-   destino: `payments` tem `retained_amount`/`released_amount` (0005), mas nao o estado nem as
-   datas do repasse. A mesma 0007 deve trazer o bloco de retencao:
+O bloco inteiro foi aplicado na `apps/api/migrations/0008_payments_retention_and_charge_status.sql`
+(o `0007` passou a ser dos tokens de refresh, entao o numero foi remanejado):
 
-| Coluna legada | Preenchidas | Coluna canonica proposta |
-|---|---:|---|
-| `Pagamento_Lista.Status` | 15.535 | `payments.retention_status text` |
-| `Pagamento_Lista.DataAprovacao` | 7.091 (2020-11-09 a 2026-03-30) | `payments.retention_approved_at date` |
-| `Pagamento_Lista.MesAnoProgramacaoRepasse` | 7.087 (`MM AAAA`, 01 2021 a 12 2025) | `payments.retention_scheduled_month text` |
-| `Pagamento_Lista.MesAnoRepasseRealizado` | 6.875 (2020-12-07 a 2026-03-06) | `payments.retention_released_at date` |
-| `Pagamento_Lista.PorcentagemAcordo` | 7.080 (0 a 0,35) | `payments.retention_percentage numeric(5, 4)` |
-| `Pagamento_Lista.ValorRetido` | 7.091 (0 a 99,925) | `payments.retained_amount` (ja mapeado e confirmado) |
+1. `ALTER TABLE asaas_charges ALTER COLUMN status SET DEFAULT 'unknown';` — com o `DEFAULT`, as
+   4.799 linhas vazias (e o `z`) deixam de ser um `INSERT` incompleto e passam a sair como
+   `LOAD_VALUE_DEFAULTED`, rastreado no relatorio de carga;
+2. o bloco de retencao:
 
-`PorcentagemAcordo` estava como `review: semantics_unclear` com "76 valores distintos"; o
-levantamento mostra que ele e a **fracao de retencao** (0 a 0,35 = 0% a 35%) que alimenta a formula
-de `Pagamento_Lista.ValorRetido` ja registrada no mapa
-(`min(valor_pago * percentual, meta da escola)`). Por isso ele entra no mesmo bloco de retencao em
-vez de virar campo solto;
+| Coluna legada | Preenchidas | Coluna canonica | Coluna criada |
+|---|---:|---|---|
+| `Pagamento_Lista.Status` | 15.535 | `payments.retention_status` | com CHECK dos 5 rotulos |
+| `Pagamento_Lista.DataAprovacao` | 7.091 (2020-11-09 a 2026-03-30) | `payments.retention_approved_at` | `date` |
+| `Pagamento_Lista.MesAnoProgramacaoRepasse` | 7.087 (`MM AAAA`) | `payments.retention_scheduled_month` | `text` com CHECK `AAAA-MM` |
+| `Pagamento_Lista.MesAnoRepasseRealizado` | 6.875 (2020-12-07 a 2026-03-06) | `payments.retention_released_at` | `date` |
+| `Pagamento_Lista.PorcentagemAcordo` | 7.080 (0 a 0,35) | `payments.retention_percentage` | `numeric(5, 4)` com CHECK de 0 a 1 |
+| `Pagamento_Lista.ValorRetido` | 7.091 | `payments.retained_amount` | ja existia desde a 0005 |
 
-3. com a 0007 aplicada, estas colunas podem virar `map` + `status: proposed` (e depois
-   `confirmed`), removendo do gate os itens `status_map_unconfirmed` e `payments_retention_approval`.
+3. as 5 colunas de retencao e o status de cobranca viraram `map` + `status: confirmed` no
+   dicionario: as pendencias `status_map_unconfirmed`, `semantics_unclear` e `schema_gap_pending`
+   e as lacunas `payments_retention_approval`/`payments_charge_status` sairam do gate (`review`
+   caiu de 37 para 31).
+
+#### O que o loader precisou aprender
+
+- `ALTER TABLE ... ALTER COLUMN ... SET DEFAULT` passou a ser lido como o `DEFAULT` do
+  `CREATE TABLE`: e o que tira a coluna `NOT NULL` de `required_columns` e entrega o fallback
+  rastreavel;
+- normalizacao `fraction`: aceita virgula decimal e ruido de float (`0,25000001` -> `0.2500`) e
+  **recusa** o que sai de 0..1 (um valor fora da faixa violaria o CHECK e abortaria a transacao);
+- normalizacao `month_year`: `09 2024` -> `2024-09`;
+- `--enrich-reused` (so com `--commit`): uma linha reusada pela chave legada nao era atualizada, e
+  a coluna nova ficaria vazia para sempre. O passo faz
+  `UPDATE ... SET col = COALESCE(col, %s) WHERE id = %s AND (col IS NULL)`, entao o valor gravado
+  sempre vence e a rodada seguinte reporta `enriched=0`.
+
+```powershell
+# enriquecimento das linhas ja carregadas com as colunas novas da 0008
+python scripts\load_canonical_batch.py --commit --enrich-reused `
+  --staging-url $env:DIRECT_DATABASE_URL --set-batch-status committed
+```
+
+Resultado no canonico local: `payments.retention_status` em **7.016 de 7.016** linhas,
+`retention_percentage` 6.882 (0,0000 a 0,3500, 61 valores distintos), `retention_approved_at` 6.893,
+`retention_scheduled_month` 6.889 e `retention_released_at` 6.678 — os intervalos previstos acima,
+sem nenhum pagamento com `retained_amount > 0` e `retention_percentage` nulo. A segunda rodada
+reportou `enriched=0` (idempotencia real). Unico achado novo: 1 linha com
+`Pagamento_Lista.MesAnoProgramacaoRepasse = '10'`, descartada como `LOAD_MONTH_YEAR_UNPARSEABLE`
+(achados de 20 para 21, nenhum bloqueio novo).
+
+`payments.released_amount` continua 0,00 para todas as linhas: o legado nao tem coluna de valor
+liberado (a 0005 criou a coluna para o fluxo novo da API). O que o legado registra e o estado
+(`retention_status = 'released'`, 6.796 linhas) e a data (`retention_released_at`).
 
 ### Decisao de `billing_type` e `environment` das cobrancas
 
@@ -459,6 +486,7 @@ banco errado).
 | Canonico local | `schools` 75, `customers` 26.264, `contacts` 46.829, `students` 6.641, `agreements` 1.505, `asaas_customers` 1.120, `installments` 15.259, `payments` 7.016 = **104.709 linhas** |
 | Totais | `agreements.total_amount` 7.161.716,00 = `installments.original_amount` 7.161.716,00; `payments.amount` 3.594.788,37; `payments.retained_amount` 924.781,71 |
 | Integridade | 0 contatos sem `customer_id`; o segundo `--commit` inseriu apenas as 24 linhas que faltavam e reutilizou as outras 104.685 (idempotencia provada em rodada real) |
+| Enriquecimento (0008) | `--commit --enrich-reused` na revisao de 2026-10-09: `enriched=7016` (todas as linhas de `payments`), 0 novas e 0 descartes; segunda rodada `enriched=0` |
 
 #### Correcao de ordenacao das abas encontrada pelo ensaio
 
