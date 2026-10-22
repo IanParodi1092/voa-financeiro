@@ -1251,14 +1251,18 @@ class UniqueKeyTests(unittest.TestCase):
 
 
 class RealDictionaryTests(unittest.TestCase):
-    """The real dictionary must keep the readiness split documented after the 2026-09-25 confirmation."""
+    """The real dictionary must keep the readiness split documented after the 2026-10-22 decision."""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.dictionary = load_dictionary(DEFAULT_DICTIONARY)
         cls.schema = parse_canonical_columns()
-        cls.plan_data = build_plan(cls.dictionary, cls.schema, None, set())
+        # `Pagamento_Nome -> agreements.reference` entrou como `proposed` em 2026-10-22, entao a
+        # cadeia financeira so fica pronta com a aprovacao explicita - que e a flag que a carga real
+        # recebe. O plano sem a flag fica guardado para cobrir o bloqueio.
+        cls.plan_data = build_plan(cls.dictionary, cls.schema, None, {"agreements"})
         cls.tables = cls.plan_data["tables"]
+        cls.without_flag = build_plan(cls.dictionary, cls.schema, None, set())["tables"]
 
     def test_source_name_matches_the_staged_workbook(self) -> None:
         self.assertEqual(self.dictionary["source_name"], "VOA.xlsx")
@@ -1283,9 +1287,20 @@ class RealDictionaryTests(unittest.TestCase):
         agreements = self.tables["agreements"]
         self.assertEqual(agreements.missing_required, [])
         self.assertEqual(agreements.status, "ready")
-        self.assertEqual(agreements.proposed_columns, [])
+        self.assertEqual(agreements.proposed_columns, ["reference"])
         self.assertEqual(agreements.links, {"customer_id": "customers"})
         self.assertEqual(sorted(agreements.aggregates), ["installments_count", "total_amount"])
+
+    def test_the_a_prime_mapping_waits_for_the_operator_flag(self) -> None:
+        """`Pagamento_Nome -> agreements.reference` is `proposed`: no flag, no financial chain."""
+        agreements = self.without_flag["agreements"]
+        self.assertEqual(agreements.status, "blocked")
+        self.assertEqual(agreements.blocked_reason, "mapping_not_confirmed")
+        self.assertEqual(agreements.proposed_columns, ["reference"])
+        for table in ("installments", "payments"):
+            self.assertEqual(self.without_flag[table].status, "blocked", table)
+            self.assertEqual(self.without_flag[table].blocked_reason, "dependency_not_loaded", table)
+        self.assertEqual(self.without_flag["customers"].status, "ready")
 
     def test_the_synthesised_customer_keeps_one_row_per_agreement(self) -> None:
         rules = self.dictionary["sheets"]["TBL_PAGAMENTO"]["columns"]

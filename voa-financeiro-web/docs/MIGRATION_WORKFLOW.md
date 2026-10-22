@@ -9,11 +9,11 @@
 - O lote completo `VOA.xlsx` da revisao anterior (419.700 linhas em 39 abas) esta em staging no Supabase e ja passou por validacao. A revisao de 2026-09-25 20:01 (`VOA.xlsx`, **60 abas e 546.346 linhas**) **esta estagiada e validada no Postgres local** (lote `4609c071-03c3-47fb-beff-5c3bcad6367e`), com o dicionario conferido (`0` divergencia de coluna e `1` aba vazia) e a carga canonica (fase 7) **executada e commitada no Postgres local** (104.709 linhas, lote marcado `committed`); o ensaio revelou e corrigiu um erro de ordenacao das abas que descartava 24 contatos - ver "Carga canonica local da revisao de 20:01". O mesmo commit no Supabase segue pendente porque ele entrou em somente-leitura por cota de disco - ver "Incidente de disco no staging" e "Staging local + canonico no Supabase".
 - A validacao registra achados por aba/campo, marca linhas com erro e atualiza `reconciliation_reports`.
 - O relatorio consolidado da ultima validacao esta em `docs/STAGING_VALIDATION_REPORT.md`.
-- O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 38 `map`, 78 `ignore`, 734 `defer` e 6 `review`.
+- O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 39 `map`, 78 `ignore`, 734 `defer` e 5 `review`.
 - A comparacao entre o Canvas App legado e as planilhas esta em `docs/LEGACY_APP_SOURCE_GAPS.md`, gerada por `scripts/audit_legacy_app_sources.py` (`npm run db:audit-app-sources`): 2 tabelas lidas pela app nao tem aba (`TBL_CONSULTA` e `TBL_EMAILISTACONTATO`, deixadas fora de proposito), 2 campos de negocio faltam nas abas que existem (`CONTA_NOME`, `EMPRESA_ID`), 3 tabelas tem o conteudo em aba irma (`_FINANCEIRO`) e 5 fontes fora do Dataverse (conectores e Excel Online) nunca estiveram no workbook.
 - O relatorio do dicionario esta em `docs/FIELD_MAPPING_DICTIONARY.md`, gerado por `scripts/build_field_dictionary.py`.
-- A triagem das colunas `review` esta em `docs/FIELD_MAPPING_TRIAGE.md`: o que cada uma e no dado do lote, a decisao por classe (sem destino canonico, decisao ja tomada em 2026-09-25, politica de identidade, schema faltando, endereco de escola) e o impacto de cada aceite no portao. Em 2026-10-22 o operador aceitou as classes A, B e E: **22 colunas sairam de `review`** e a classe D foi aprovada de forma estreita (migration `0009` so com `contacts.legacy_id` e `installments.legacy_id`).
-- A carga canonica (fase 7) esta em `scripts/load_canonical_batch.py`, com dry-run por padrao. Em 2026-09-25 ela carregou 78.217 linhas de `schools`, `customers`, `contacts` e `students` e, na mesma data, a cadeia financeira (`agreements`, `installments`, `payments`, `asaas_customers` e o cliente pagador sintetizado) com `agreements.total_amount` fechando exatamente com a soma de `installments.original_amount`; o relatorio da ultima rodada esta em `docs/CANONICAL_LOAD_REPORT.md`. Com os 22 mapeamentos `proposed` confirmados pelo operador em 2026-09-25, a proxima execucao **nao** precisa mais de `--allow-proposed` (a flag segue aceita para reproduzir a carga historica).
+- A triagem das colunas `review` esta em `docs/FIELD_MAPPING_TRIAGE.md`: o que cada uma e no dado do lote, a decisao por classe (sem destino canonico, decisao ja tomada em 2026-09-25, politica de identidade, schema faltando, endereco de escola) e o impacto de cada aceite no portao. Em 2026-10-22 o operador aceitou as classes A, B, E e A': **23 colunas sairam de `review`**, a classe D foi aprovada de forma estreita (migration `0009` so com `contacts.legacy_id` e `installments.legacy_id`) e a classe A' entrou como `status: "proposed"`.
+- A carga canonica (fase 7) esta em `scripts/load_canonical_batch.py`, com dry-run por padrao. Em 2026-09-25 ela carregou 78.217 linhas de `schools`, `customers`, `contacts` e `students` e, na mesma data, a cadeia financeira (`agreements`, `installments`, `payments`, `asaas_customers` e o cliente pagador sintetizado) com `agreements.total_amount` fechando exatamente com a soma de `installments.original_amount`; o relatorio da ultima rodada esta em `docs/CANONICAL_LOAD_REPORT.md`. Os 22 mapeamentos `proposed` de entao foram confirmados pelo operador em 2026-09-25; desde 2026-10-22 existe **um** `proposed` novo (`Pagamento_Nome -> agreements.reference`), entao a carga precisa de `--allow-proposed agreements` (sem a flag `agreements` fica bloqueado por `mapping_not_confirmed` e `installments`/`payments` caem por dependencia) ate esse mapeamento virar `confirmed`.
 - O profiler esta em `scripts/profile_legacy_workbook.py`.
 - O importador de staging esta em `scripts/stage_legacy_workbook.py`.
 - O validador de staging esta em `scripts/validate_staging_batch.py`.
@@ -368,11 +368,35 @@ Quatro pontos de operacao:
 
 Validacao: `python scripts\load_canonical_batch.py` (dry-run) reusou as `104.709` linhas
 (`inserted=0`, `reused=104.709`) e `canonical_before == canonical_after` em todas as tabelas;
-o dicionario foi para `38 map`, `78 ignore`, `734 defer`, `6 review` (`0` problema estrutural e
-`0` divergencia de staging) e a suite Python foi para `204` testes (as `6` novas cobrem a checagem
-do schema vivo). As migrations tambem foram aplicadas do zero: `npm run test:integration` com
-`TEST_DATABASE_URL` roda `applyMigrations` num schema temporario e passou com `21` testes, e
-`npm run db:migrate` no banco existente reporta `0 aplicadas, 9 ja aplicadas`.
+o dicionario ficou em `38 map`, `78 ignore`, `734 defer`, `6 review` (`0` problema estrutural e
+`0` divergencia de staging - as contagens de hoje, depois da classe A', estao na secao seguinte) e a
+suite Python foi para `204` testes (as `6` novas cobrem a checagem do schema vivo). As migrations
+tambem foram aplicadas do zero: `npm run test:integration` com `TEST_DATABASE_URL` roda
+`applyMigrations` num schema temporario e passou com `21` testes, e `npm run db:migrate` no banco
+existente reporta `0 aplicadas, 9 ja aplicadas`.
+
+### Aplicado em 2026-10-22: classe A' como `proposed`
+
+`TBL_PAGAMENTO.Pagamento_Nome` (`Acordo 2024`=438, `Acordo 2023`=557, `Acordo 2025`=186; 73 rotulos em
+1.570 linhas) passou a `map: agreements.reference` com `status: "proposed"` - era a unica coluna da
+triagem com semantica comprovada **e** destino livre no schema (`agreements.reference` existia e nenhuma
+coluna escrevia nela). O dicionario foi para `39 map` / `5 review` e o portao continua com `6` itens,
+agora `5 REVIEW_REQUIRED` + `1 MAPPING_NOT_CONFIRMED`.
+
+Efeito medido na carga (dry-run, mesmo lote `4609c071`):
+
+| Rodada | Entidades prontas | Linhas reusadas |
+|---|---:|---:|
+| sem `--allow-proposed` | 5 (`schools`, `customers`, `contacts`, `students`, `asaas_customers`) | 80.929 |
+| com `--allow-proposed agreements` | 8 (acima + `agreements`, `installments`, `payments`) | 104.709 |
+
+Sem a flag, `agreements` fica com `mapping_not_confirmed (reference)` e `installments`/`payments` caem
+por `dependency_not_loaded`; `asaas_charges` segue bloqueado por colunas obrigatorias em qualquer das
+duas rodadas (achado pre-existente). Em nenhuma delas ha insercao (`inserted=0`): a proposta nao muda
+dado ate alguem rodar `--commit --enrich-reused`, quando `agreements.reference` e preenchida pelo
+`COALESCE` do enriquecimento (nunca sobrescreve valor existente). O bloqueio sem a flag e o desenho do
+loader: `status: proposed` so carrega com aprovacao explicita do operador. Falta remover o `status`
+(virar `confirmed`) depois de validar a coluna em tela - e o que devolve a rodada limpa sem flag.
 
 ### Decisao de `billing_type` e `environment` das cobrancas
 

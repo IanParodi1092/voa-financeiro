@@ -9,10 +9,10 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 |---|---:|
 | Abas inventariadas | 60 |
 | Colunas inventariadas | 856 |
-| Colunas com `map` | 38 |
+| Colunas com `map` | 39 |
 | Colunas `ignore` | 78 |
 | Colunas `defer` | 734 |
-| Colunas `review` | 6 |
+| Colunas `review` | 5 |
 | Colunas `unmapped` | 0 |
 | Problemas estruturais | 0 |
 | Itens de politica pendentes | 6 |
@@ -58,7 +58,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | TBL_DIVIDA | `agreements` | 10 | 0 | 3 | 7 | 0 |
 | TBL_DIVIDA_LISTAGEM | `agreements` | 11 | 0 | 4 | 7 | 0 |
 | TBL_ESCOLA | `schools` | 16 | 5 | 5 | 6 | 0 |
-| TBL_PAGAMENTO | `agreements` | 24 | 5 | 7 | 10 | 2 |
+| TBL_PAGAMENTO | `agreements` | 24 | 6 | 7 | 10 | 1 |
 | TBL_PAGAMENTO_LISTAGEM | `installments` | 34 | 17 | 13 | 4 | 0 |
 | TBL_USER | `users` | 13 | 0 | 3 | 9 | 1 |
 
@@ -1140,7 +1140,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 - Entidade canonica: agreements
 - Tipo de linha: entity
 - Observacoes: 1.572 acordos/pagamentos e a origem confirmada de agreements (fase 7). Decisao do operador (25/09): o cliente pagador nunca existiu como coluna no app legado (TBL_CLIENTE e registro institucional de CNPJ/CNAE/INEP e nenhuma ponte por e-mail/telefone/nome/CNPJ fechou), entao ele e sintetizado desta propria aba - customers.legacy_id = Pagamento.ID, customers.full_name = Pagamento.Nome_Aluno e asaas_customers.external_id = Pagamento.CliAsaas_ID com ambiente `production`. agreements.customer_id entra por `links: row:customers` e total_amount/installments_count sao derivados de TBL_PAGAMENTO_LISTAGEM.
-- Colunas: 24 (map=5, ignore=7, defer=10, review=2, unmapped=0)
+- Colunas: 24 (map=6, ignore=7, defer=10, review=1, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
@@ -1157,7 +1157,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Attachments | ignore |  |  |  |  |  | attachment_metadata |
 | Pagamento.Aluno_ID | map | agreements.student_id | reference | trim |  | students | 1.568 preenchidos, 4 vazios; contem listas ('102;103') |
 | Pagamento.Tipo | defer |  |  |  |  |  | JUDICIAL, EXTRAJUDICIAL, CEJUSC, PERSONALIZADO [gap: agreements_type] |
-| Pagamento_Nome | review |  |  |  |  |  | 73 valores distintos em 1.570 linhas |
+| Pagamento_Nome | map | agreements.reference | text | collapse_ws |  |  | rotulo do lote de acordo ('Acordo 2024': 557, 'Acordo 2023': 438, 'Acordo 2025': 186; 73 rotulos em 1.570 linhas). Agrupa lotes, nao identifica acordo - a identidade continua em agreements.legacy_id (TBL_PAGAMENTO.ID); nenhuma coluna escrevia em agreements.reference. Enquanto 'proposed', a carga exige --allow-proposed agreements [status: proposed] |
 | Pagamento_USUARIOCRIACAO | defer |  |  |  |  |  | user_link_requires_review |
 | Pagamento_StatusAcordo | ignore |  |  |  |  |  | empty_column |
 | Pagamento_DataFechamento | review |  |  |  |  |  | 1.497 preenchidos; viraria agreements.closed_at [gap: agreements_closed_at] |
@@ -1601,10 +1601,10 @@ Colunas: `TBL_USER.ID`.
 
 | Codigo | Motivo | Ocorrencias | Abas | Exemplos |
 |---|---|---:|---|---|
+| `MAPPING_NOT_CONFIRMED` | `proposed` | 1 | TBL_PAGAMENTO | `TBL_PAGAMENTO.Pagamento_Nome` |
 | `REVIEW_REQUIRED` | `name_only_link_not_allowed` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.Responsavel_Financeiro` |
 | `REVIEW_REQUIRED` | `pending_policy` | 1 | TBL_ENDTEL | `TBL_ENDTEL.ENDTEL_ALUNO_ID` |
 | `REVIEW_REQUIRED` | `schema_gap_pending` | 2 | TBL_PAGAMENTO, TBL_USER | `TBL_PAGAMENTO.Pagamento_DataFechamento`, `TBL_USER.ID` |
-| `REVIEW_REQUIRED` | `semantics_unclear` | 1 | TBL_PAGAMENTO | `TBL_PAGAMENTO.Pagamento_Nome` |
 | `REVIEW_REQUIRED` | `unreliable_document_source` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.CPFResponsavel` |
 
 ## Motivos registrados
@@ -1649,7 +1649,6 @@ Colunas: `TBL_USER.ID`.
 | review | `name_only_link_not_allowed` | 1 | vinculo somente por nome nao e permitido; exige documento ou revisao assistida |
 | review | `pending_policy` | 1 | decisao de negocio pendente registrada na fase 2 |
 | review | `schema_gap_pending` | 2 | exige migration nova ou ajuste de schema antes da carga canonica |
-| review | `semantics_unclear` | 1 | semantica legada nao documentada; exige confirmacao de negocio |
 | review | `unreliable_document_source` | 1 | documento do legado com falha de validacao; nao pode vincular automaticamente |
 
 ## Avisos (nao bloqueiam)

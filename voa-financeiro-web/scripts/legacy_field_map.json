@@ -258,7 +258,7 @@
         { "match": "Pagamento_CliAsaas_ID", "map": "asaas_customers.environment", "type": "code", "normalization": "none", "const": "production", "required": true, "status": "confirmed", "note": "decisao do operador (25/09): as cobrancas do legado sao de producao; o check do schema aceita sandbox|production" },
         { "match": "Pagamento_EmailPrincipal", "defer": "contact_destination_requires_customer_link" },
         { "match": "Pagamento_CelPrincipal", "defer": "contact_destination_requires_customer_link" },
-        { "match": "Pagamento_Nome", "review": "semantics_unclear", "note": "73 valores distintos em 1.570 linhas" },
+        { "match": "Pagamento_Nome", "map": "agreements.reference", "type": "text", "normalization": "collapse_ws", "status": "proposed", "note": "rotulo do lote de acordo ('Acordo 2024': 557, 'Acordo 2023': 438, 'Acordo 2025': 186; 73 rotulos em 1.570 linhas). Agrupa lotes, nao identifica acordo - a identidade continua em agreements.legacy_id (TBL_PAGAMENTO.ID); nenhuma coluna escrevia em agreements.reference. Enquanto 'proposed', a carga exige --allow-proposed agreements" },
         { "match": "Pagamento_Aluno_ID", "defer": "no_canonical_destination", "note": "coluna duplicada de Pagamento.Aluno_ID; 1.152 preenchidos e nao confiaveis" },
         { "match": "Pagamento.Nome_Aluno", "map": "customers.full_name", "type": "name", "normalization": "collapse_ws", "required": true, "status": "confirmed", "note": "rotulo do cliente pagador sintetizado; sem este nome a linha nao cria customers e o acordo fica sem customer_id (LOAD_ROW_LINK_UNRESOLVED)" },
         { "match": "Pagamento.Nome_Escola", "ignore": "denormalized_display_name" },

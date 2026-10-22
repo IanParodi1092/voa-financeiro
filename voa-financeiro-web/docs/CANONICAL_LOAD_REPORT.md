@@ -5,7 +5,7 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 
 | Metrica | Valor |
 |---|---:|
-| Modo | commit |
+| Modo | dry-run |
 | Lote | `4609c071-03c3-47fb-beff-5c3bcad6367e` (VOA.xlsx, status committed) |
 | Fonte legada | `powerapps-voa` |
 | Staging | `localhost:5434/voa_staging` |
@@ -19,18 +19,18 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | Linhas reutilizadas (idempotencia) | 104709 |
 | Linhas descartadas | 17282 |
 | Achados registrados | 21 |
-| Escrita canonica nesta rodada | sim |
+| Escrita canonica nesta rodada | nao |
 
 ## Plano por entidade canonica
 
 | Tabela | Situacao | Motivo | Dependencias | Colunas mapeadas | Obrigatorias sem cobertura |
 |---|---|---|---|---:|---|
-| `agreements` | ready |  | customers, schools, students | 6 | nenhuma |
+| `agreements` | ready |  | customers, schools, students | 7 | nenhuma |
 | `asaas_charges` | blocked | required_columns_uncovered (asaas_customer_id, billing_type, due_date, environment, value) | installments | 5 | asaas_customer_id, billing_type, due_date, environment, value |
 | `asaas_customers` | ready |  | customers | 3 | nenhuma |
-| `contacts` | ready |  | customers | 3 | nenhuma |
+| `contacts` | ready |  | customers | 4 | nenhuma |
 | `customers` | ready |  | - | 3 | nenhuma |
-| `installments` | ready |  | agreements | 4 | nenhuma |
+| `installments` | ready |  | agreements | 5 | nenhuma |
 | `payments` | ready |  | installments | 9 | nenhuma |
 | `schools` | ready |  | - | 4 | nenhuma |
 | `students` | ready |  | schools | 4 | nenhuma |
@@ -152,7 +152,7 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | TBL_PAGAMENTO | `LOAD_REQUIRED_FIELD_EMPTY` | Pagamento_CliAsaas_ID | 446 | linha 24: asaas_customers: Pagamento_CliAsaas_ID vazio na origem; linha 25: asaas_customers: Pagamento_CliAsaas_ID vazio na origem; linha 125: asaas_customers: Pagamento_CliAsaas_ID vazio na origem |
 | TBL_PAGAMENTO | `LOAD_ROW_LINK_UNRESOLVED` | agreements.customer_id -> customers | 4 | linha 236: agreements: vinculo da propria linha nao resolvido; linha 1480: agreements: vinculo da propria linha nao resolvido; linha 1482: agreements: vinculo da propria linha nao resolvido |
 | TBL_PAGAMENTO | `LOAD_ROW_LINK_UNRESOLVED` | asaas_customers.customer_id -> customers | 4 | linha 236: asaas_customers: vinculo da propria linha nao resolvido; linha 1480: asaas_customers: vinculo da propria linha nao resolvido; linha 1482: asaas_customers: vinculo da propria linha nao resolvido |
-| TBL_PAGAMENTO_LISTAGEM | `LOAD_DUPLICATE_ROW` | agreement_id+installment_number | 263 | linha 950: installments: agreement_id+installment_number ja existe no canonico (linha TBL_PAGAMENTO_LISTAGEM.950); linha 951: installments: agreement_id+installment_number ja existe no canonico (linha TBL_PAGAMENTO_LISTAGEM.951); linha 952: installments: agreement_id+installment_number ja existe no canonico (linha TBL_PAGAMENTO_LISTAGEM.952) |
+| TBL_PAGAMENTO_LISTAGEM | `LOAD_DUPLICATE_ROW` | agreement_id+installment_number | 263 | linha 950: installments: agreement_id+installment_number ja existe no canonico (linha legada TBL_PAGAMENTO_LISTAGEM.3844); linha 951: installments: agreement_id+installment_number ja existe no canonico (linha legada TBL_PAGAMENTO_LISTAGEM.3845); linha 952: installments: agreement_id+installment_number ja existe no canonico (linha legada TBL_PAGAMENTO_LISTAGEM.3846) |
 | TBL_PAGAMENTO_LISTAGEM | `LOAD_MONTH_YEAR_UNPARSEABLE` | Pagamento_Lista.MesAnoProgramacaoRepasse | 1 | linha 13255: valor legado '10' descartado em payments.retention_scheduled_month |
 | TBL_PAGAMENTO_LISTAGEM | `LOAD_REFERENCE_UNRESOLVED` | Pagamento_Listagem.Pagamento.ID | 3 | linha 10312: installments: Pagamento_Listagem.Pagamento.ID=912 sem registro em agreements; linha 10884: installments: Pagamento_Listagem.Pagamento.ID=1704 sem registro em agreements; linha 13333: installments: Pagamento_Listagem.Pagamento.ID=33 sem registro em agreements |
 | TBL_PAGAMENTO_LISTAGEM | `LOAD_REQUIRED_FIELD_EMPTY` | Pagamento_Listagem.Pagamento.ID | 6 | linha 13439: installments: Pagamento_Listagem.Pagamento.ID vazio na origem; linha 13440: installments: Pagamento_Listagem.Pagamento.ID vazio na origem; linha 13441: installments: Pagamento_Listagem.Pagamento.ID vazio na origem |
