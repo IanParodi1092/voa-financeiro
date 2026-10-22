@@ -74,8 +74,10 @@ npm run test:integration
 Sem `TEST_DATABASE_URL` o bloco inteiro e ignorado, entao `npm test` permanece verde em maquina sem
 banco. Os testes cobrem login (sucesso e falha auditada), cookie `voa_refresh` httpOnly,
 `/auth/me`, rotacao do refresh (reuso do token antigo recebe 401), RBAC (`viewer` recebe 403 nas
-escritas), a cadeia `schools`/`customers`/`students`/`contacts`/`agreements`/`installments`/`payments`
-e `GET /audit-logs` restrito ao `admin`.
+escritas), a cadeia `schools`/`customers`/`students`/`contacts`/`agreements`/`installments`/`payments`,
+os `PATCH` parciais (inclusive o gate de retencao) e as rotas de migracao (registro idempotente do
+lote, `validate`/`commit` com bloqueio aberto, triagem de achado) - com `GET /audit-logs` restrito ao
+`admin`.
 
 Para criar o primeiro administrador no banco local, aponte as duas variaveis (`create-admin` prefere
 `DIRECT_DATABASE_URL`) e informe e-mail e senha temporarios:

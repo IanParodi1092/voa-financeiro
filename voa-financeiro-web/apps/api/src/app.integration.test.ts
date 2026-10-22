@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type LightMyRequestResponse } from 'fastify';
@@ -549,6 +549,302 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
       // amount > 0 e CHECK de payments
       expect(await patchRow(pool, { table: 'payments', returning: 'id', softDelete: false }, paymentId, { amount: -1 }))
         .toEqual({ status: 'invalid_value' });
+    });
+  });
+
+  /**
+   * As rotas de migracao nao rodam staging/validacao/carga: elas leem e selam o que os scripts
+   * Python deixaram em `migration_batches`, `migration_rows`, `migration_errors` e
+   * `reconciliation_reports`. Por isso o seed abaixo insere essas linhas direto no banco.
+   */
+  describe('migracoes: registro, gate e triagem', () => {
+    const authHeader = async (email: string) => ({ authorization: `Bearer ${await accessTokenOf(email)}` });
+    const hashOf = (seed: string): string => createHash('sha256').update(seed).digest('hex');
+    const registerPayload = (name = `VOA-${randomUUID().slice(0, 8)}.xlsx`) => ({
+      sourceName: name,
+      sourceHash: hashOf(name),
+      sourceKind: 'xlsx' as const,
+      rowCount: 12
+    });
+
+    const createBatch = async (): Promise<string> => {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/migrations/batches',
+        headers: await authHeader('admin@example.com'),
+        payload: registerPayload()
+      });
+      expect(created.statusCode).toBe(201);
+      return (created.json() as { id: string }).id;
+    };
+
+    const addRows = async (batchId: string, count: number, status = 'staged'): Promise<string[]> => {
+      const ids: string[] = [];
+      for (let index = 1; index <= count; index += 1) {
+        const inserted = await pool.query<{ id: string }>(
+          `INSERT INTO migration_rows (batch_id, source_sheet, source_row_number, row_hash, payload, status)
+           VALUES ($1, 'TBL_ESCOLA', $2, $3, '{}'::jsonb, $4) RETURNING id`,
+          [batchId, index, hashOf(`${batchId}:${index}`), status]
+        );
+        ids.push(inserted.rows[0]?.id ?? '');
+      }
+      return ids;
+    };
+
+    const addFinding = async (
+      batchId: string,
+      severity: 'warning' | 'error' | 'blocking',
+      options: { resolved?: boolean; rowId?: string | null } = {}
+    ): Promise<string> => {
+      const inserted = await pool.query<{ id: string }>(
+        `INSERT INTO migration_errors (batch_id, row_id, error_code, severity, field_name, message, details, resolved_at)
+         VALUES ($1, $2, 'VALIDATOR_TEST', $3, 'ESCOLA_NOME', 'achado de teste', '{}'::jsonb, $4) RETURNING id`,
+        [batchId, options.rowId ?? null, severity, options.resolved ? new Date() : null]
+      );
+      return inserted.rows[0]?.id ?? '';
+    };
+
+    const addReport = async (batchId: string, entityName = 'schools'): Promise<void> => {
+      await pool.query(
+        `INSERT INTO reconciliation_reports (batch_id, entity_name, source_count, staged_count, canonical_count)
+         VALUES ($1, $2, 2, 2, 2)`,
+        [batchId, entityName]
+      );
+    };
+
+    it('registra a fonte uma unica vez e devolve o lote existente na repeticao', async () => {
+      const headers = await authHeader('admin@example.com');
+      const payload = registerPayload();
+
+      const created = await app.inject({ method: 'POST', url: '/api/v1/migrations/batches', headers, payload });
+      expect(created.statusCode).toBe(201);
+      const batch = created.json() as { id: string; status: string; rowCount: number; duplicate: boolean; sourceKind: string };
+      expect(batch).toMatchObject({ status: 'profiled', rowCount: 12, sourceKind: 'xlsx', duplicate: false });
+
+      const repeated = await app.inject({ method: 'POST', url: '/api/v1/migrations/batches', headers, payload });
+      expect(repeated.statusCode).toBe(200);
+      expect(repeated.json()).toMatchObject({ id: batch.id, duplicate: true });
+
+      const stored = await pool.query<{ total: number }>(
+        'SELECT count(*)::int AS total FROM migration_batches WHERE source_name = $1', [payload.sourceName]);
+      expect(stored.rows[0]?.total).toBe(1);
+
+      const detail = await app.inject({ method: 'GET', url: `/api/v1/migrations/batches/${batch.id}`, headers });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({
+        id: batch.id,
+        rows: { total: 0, inError: 0 },
+        findings: {},
+        reconciliation: [],
+        gate: { validate: { ok: false, blockers: ['NO_ROWS'] }, commit: { ok: false, blockers: ['NO_ROWS', 'NO_RECONCILIATION'] } }
+      });
+    });
+
+    it('nega a escrita da migracao ao finance e ao viewer e libera a leitura', async () => {
+      const payload = registerPayload();
+      for (const email of ['finance@example.com', 'viewer@example.com']) {
+        const refused = await app.inject({
+          method: 'POST', url: '/api/v1/migrations/batches', headers: await authHeader(email), payload
+        });
+        expect({ email, statusCode: refused.statusCode }).toEqual({ email, statusCode: 403 });
+        expect(refused.json()).toMatchObject({ code: 'FORBIDDEN' });
+      }
+      const batchId = await createBatch();
+      const sealed = await app.inject({
+        method: 'POST',
+        url: `/api/v1/migrations/batches/${batchId}/validate`,
+        headers: await authHeader('finance@example.com')
+      });
+      expect(sealed.statusCode).toBe(403);
+
+      const listed = await app.inject({
+        method: 'GET', url: '/api/v1/migrations/batches', headers: await authHeader('viewer@example.com')
+      });
+      expect(listed.statusCode).toBe(200);
+      expect((listed.json() as { items: unknown[] }).items.length).toBeGreaterThan(0);
+    });
+
+    it('valida o lote limpo, sela o commit, audita as transicoes e nao reabre o lote', async () => {
+      const headers = await authHeader('admin@example.com');
+      const batchId = await createBatch();
+      await addRows(batchId, 2);
+      await addReport(batchId);
+
+      const validated = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/validate`, headers
+      });
+      expect(validated.statusCode).toBe(200);
+      expect(validated.json()).toMatchObject({
+        id: batchId,
+        status: 'validated',
+        counts: { rowsTotal: 2, rowsInError: 0, reconciliationReports: 1 },
+        gate: { ok: true, blockers: [] }
+      });
+
+      const committed = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/commit`, headers
+      });
+      expect(committed.statusCode).toBe(200);
+      const sealed = committed.json() as { status: string; completedAt: string | null };
+      expect(sealed.status).toBe('committed');
+      expect(sealed.completedAt).not.toBeNull();
+
+      const actions = await pool.query<{ action: string }>(
+        `SELECT action FROM audit_logs
+          WHERE entity_type = 'migration_batches' AND entity_id = $1 ORDER BY created_at`, [batchId]);
+      expect(actions.rows.map((row) => row.action)).toEqual([
+        'migration.batch.registered',
+        'migration.batch.validated',
+        'migration.batch.committed'
+      ]);
+
+      const again = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/validate`, headers
+      });
+      expect(again.statusCode).toBe(409);
+      expect(again.json()).toMatchObject({ code: 'INVALID_STATUS', status: 'committed' });
+
+      const listed = await app.inject({
+        method: 'GET', url: '/api/v1/migrations/batches?status=committed&limit=50', headers
+      });
+      expect(listed.statusCode).toBe(200);
+      const items = (listed.json() as { items: { id: string; rows: number; openFindings: number }[] }).items;
+      expect(items.find((item) => item.id === batchId)).toMatchObject({ rows: 2, openFindings: 0 });
+    });
+    it('bloqueia o gate com linha em erro e achado aberto e libera depois da triagem', async () => {
+      const headers = await authHeader('admin@example.com');
+      const batchId = await createBatch();
+      const [, failingRowId] = await addRows(batchId, 2);
+      await pool.query("UPDATE migration_rows SET status = 'error' WHERE id = $1", [failingRowId]);
+      const blockingId = await addFinding(batchId, 'blocking', { rowId: failingRowId });
+
+      const blocked = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/validate`, headers
+      });
+      expect(blocked.statusCode).toBe(409);
+      expect(blocked.json()).toMatchObject({
+        code: 'BATCH_NOT_READY',
+        blockers: ['ROWS_IN_ERROR', 'OPEN_BLOCKING_FINDINGS'],
+        counts: { rowsTotal: 2, rowsInError: 1, openFindings: { blocking: 1, error: 0 } }
+      });
+
+      const detail = await app.inject({ method: 'GET', url: `/api/v1/migrations/batches/${batchId}`, headers });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({
+        rows: { total: 2, inError: 1, byStatus: { staged: 1, error: 1 } },
+        findings: { blocking: { total: 1, open: 1 } },
+        gate: { validate: { ok: false }, commit: { ok: false, blockers: ['ROWS_IN_ERROR', 'OPEN_BLOCKING_FINDINGS', 'NO_RECONCILIATION'] } }
+      });
+
+      const open = await app.inject({
+        method: 'GET', url: `/api/v1/migrations/batches/${batchId}/errors?resolved=false`, headers
+      });
+      expect(open.statusCode).toBe(200);
+      const opened = (open.json() as { items: Record<string, unknown>[] }).items;
+      expect(opened).toMatchObject([
+        { id: blockingId, errorCode: 'VALIDATOR_TEST', severity: 'blocking', fieldName: 'ESCOLA_NOME', sourceSheet: 'TBL_ESCOLA', sourceRowNumber: 2 }
+      ]);
+      expect(opened[0]).not.toHaveProperty('details');
+
+      const resolved = await app.inject({
+        method: 'POST',
+        url: `/api/v1/migrations/errors/${blockingId}/resolve`,
+        headers,
+        payload: { note: 'nome conferido na aba TBL_ESCOLA' }
+      });
+      expect(resolved.statusCode).toBe(200);
+      expect(resolved.json()).toMatchObject({ id: blockingId, duplicate: false });
+      expect((resolved.json() as { resolvedAt: string | null }).resolvedAt).not.toBeNull();
+
+      const repeated = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/errors/${blockingId}/resolve`, headers
+      });
+      expect(repeated.statusCode).toBe(200);
+      expect(repeated.json()).toMatchObject({ id: blockingId, duplicate: true });
+
+      // Resolver o achado nao reescreve a linha do staging: a marca `error` continua bloqueando.
+      const stillBlocked = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/validate`, headers
+      });
+      expect(stillBlocked.statusCode).toBe(409);
+      expect(stillBlocked.json()).toMatchObject({ blockers: ['ROWS_IN_ERROR'] });
+
+      await pool.query("UPDATE migration_rows SET status = 'staged' WHERE id = $1", [failingRowId]);
+      const unblocked = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/validate`, headers
+      });
+      expect(unblocked.statusCode).toBe(200);
+      expect(unblocked.json()).toMatchObject({ status: 'validated' });
+    });
+    it('nao bloqueia por achado de aviso e exige reconciliacao para o commit', async () => {
+      const headers = await authHeader('admin@example.com');
+      const batchId = await createBatch();
+      await addRows(batchId, 1);
+      await addFinding(batchId, 'warning');
+
+      const validated = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/validate`, headers
+      });
+      expect(validated.statusCode).toBe(200);
+      expect(validated.json()).toMatchObject({ status: 'validated', gate: { ok: true, blockers: [] } });
+
+      const refused = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/commit`, headers
+      });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'BATCH_NOT_READY', blockers: ['NO_RECONCILIATION'] });
+
+      await addReport(batchId);
+      const committed = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/batches/${batchId}/commit`, headers
+      });
+      expect(committed.statusCode).toBe(200);
+      expect(committed.json()).toMatchObject({ status: 'committed', gate: { ok: true, blockers: [] } });
+
+      const detail = await app.inject({ method: 'GET', url: `/api/v1/migrations/batches/${batchId}`, headers });
+      expect(detail.json()).toMatchObject({
+        findings: { warning: { total: 1, open: 1 } },
+        reconciliation: [{ entityName: 'schools', sourceCount: 2, canonicalCount: 2 }]
+      });
+    });
+
+    it('responde 400 e 404 nos identificadores e filtros invalidos', async () => {
+      const headers = await authHeader('admin@example.com');
+      const badHash = await app.inject({
+        method: 'POST',
+        url: '/api/v1/migrations/batches',
+        headers,
+        payload: { sourceName: 'VOA.xlsx', sourceHash: 'nao-e-sha256' }
+      });
+      expect(badHash.statusCode).toBe(400);
+      expect(badHash.json()).toMatchObject({ code: 'INVALID_REQUEST' });
+
+      const invalidStatus = await app.inject({
+        method: 'GET', url: '/api/v1/migrations/batches?status=aprovado', headers
+      });
+      expect(invalidStatus.statusCode).toBe(400);
+
+      const batchId = randomUUID();
+      for (const [url, method] of [
+        [`/api/v1/migrations/batches/${batchId}`, 'GET'],
+        [`/api/v1/migrations/batches/${batchId}/errors`, 'GET'],
+        [`/api/v1/migrations/batches/${batchId}/validate`, 'POST'],
+        [`/api/v1/migrations/batches/${batchId}/commit`, 'POST']
+      ] as const) {
+        const missing = await app.inject({ method, url, headers });
+        expect({ url, statusCode: missing.statusCode }).toEqual({ url, statusCode: 404 });
+      }
+
+      const missingFinding = await app.inject({
+        method: 'POST', url: `/api/v1/migrations/errors/${randomUUID()}/resolve`, headers
+      });
+      expect(missingFinding.statusCode).toBe(404);
+      expect(missingFinding.json()).toMatchObject({ code: 'NOT_FOUND' });
+
+      const invalidId = await app.inject({
+        method: 'GET', url: '/api/v1/migrations/batches/nao-e-uuid', headers
+      });
+      expect(invalidId.statusCode).toBe(400);
     });
   });
 });

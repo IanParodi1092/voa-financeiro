@@ -18,6 +18,7 @@
 - O validador de staging esta em `scripts/validate_staging_batch.py`.
 - Dependencias Python dos scripts: `scripts/requirements.txt` (openpyxl e psycopg 3).
 - Fontes antigas permanecem em `_legacy-powerapps/`.
+- O gate do lote e a triagem de achados tambem estao na API (`/api/v1/migrations/...`, contrato em `docs/API_ROUTES.md`): `validate` e `commit` recalculam o gate sobre o staging e selam o lote, mas nao estagiam, nao validam e nao carregam nada - as fases continuam sendo as dos scripts abaixo.
 
 ## Fases obrigatorias
 
@@ -147,6 +148,32 @@ O que a carga grava no banco:
 Codigos de saida: `0` carregou tudo que foi pedido, `1` problema estrutural no dicionario/plano, `3` lote de staging ausente, `4` carga parcial (alguma entidade pedida continua bloqueada).
 
 O relatorio da ultima rodada fica em `docs/CANONICAL_LOAD_REPORT.md`.
+
+## Gate e triagem pela API (2026-10-22)
+
+O staging e selado por `/api/v1/migrations` sem duplicar nenhuma fase. A rota **nao** le o workbook,
+nao roda o validador e nao escreve tabela canonica: ela confere o que os scripts ja gravaram.
+
+| Passo | Rota | Efeito |
+|---|---|---|
+| registrar a fonte | `POST /api/v1/migrations/batches` | cria o lote em `profiled`, idempotente por `source_name` + sha256 do arquivo |
+| acompanhar | `GET /api/v1/migrations/batches/:id` | linhas por status, achados por severidade, reconciliacao e os dois vereditos do gate |
+| triar | `GET /api/v1/migrations/batches/:id/errors`, `POST /api/v1/migrations/errors/:id/resolve` | grava `resolved_at` e a nota em `details.resolution` (o achado continua no banco) |
+| selar validacao | `POST /api/v1/migrations/batches/:id/validate` | `profiled`/`staging`/`validated`/`approved` -> `validated` |
+| selar carga | `POST /api/v1/migrations/batches/:id/commit` | `validated`/`approved` -> `committed` e `completed_at = now()` |
+
+O gate reprova com `409 BATCH_NOT_READY` e a lista de `blockers` quando: o lote nao tem linha
+(`NO_ROWS`), alguma linha esta `error` (`ROWS_IN_ERROR`), existe achado `blocking` ou `error` sem
+`resolved_at` (`OPEN_BLOCKING_FINDINGS`, `OPEN_ERROR_FINDINGS`) ou, so no `commit`, o lote nao tem
+`reconciliation_reports` (`NO_RECONCILIATION`). `warning` nao bloqueia. Lote `committed`,
+`rolled_back` ou `failed` responde `409 INVALID_STATUS` - o gate nao reabre lote encerrado, entao o
+lote local `4609c071-03c3-47fb-beff-5c3bcad6367e` (ja `committed` desde 2026-09-26) so muda por
+script, de proposito.
+
+Resolver um achado nao mexe na linha do staging: a linha marcada `error` continua bloqueando ate ser
+corrigida na origem e reestagiada. Quem consome o lote e a carga canonica (`npm run
+db:load-canonical-commit`), que valida o status por conta propria; o `commit` da API fecha a janela e
+registra `migration.batch.committed` em `audit_logs`, nada mais.
 
 ## Pre-condicoes da carga canonica
 
