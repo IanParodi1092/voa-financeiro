@@ -132,11 +132,13 @@ O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exi
    ```powershell
    npm run db:field-dictionary      # 38 map, 78 ignore, 734 defer, 6 review
    npm run db:field-dictionary-check # exit 2, 6 REVIEW_REQUIRED, staging_mismatches 0
-   npm run test:python              # 198 testes
+   npm run test:python              # 204 testes
    python scripts\load_canonical_batch.py --json-out "$env:TEMP\voa_load.json"
    ```
 
    A carga em `dry-run` reusou todas as linhas (`inserted=0`, `reused=104.709`) e `canonical_before == canonical_after` em todas as tabelas: e a prova de que o backfill fechou a reconciliacao por chave legada.
+
+   As migrations tambem foram verificadas do zero e de forma repetida: `npm run test:integration` com `TEST_DATABASE_URL` no Postgres local roda `applyMigrations` num schema temporario e passou com `21` testes (ou seja, `0001..0009` aplicam em banco vazio), e `npm run db:migrate` no banco existente reporta `0 aplicadas, 9 ja aplicadas`.
 
 Ordem obrigatoria para qualquer ambiente novo: `db:migrate` (0009) -> `db:backfill-legacy-provenance --commit` -> carga. Habilitar o provedor antes do backfill faz a carga recusar as linhas existentes como duplicidade.
 

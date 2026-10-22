@@ -13,6 +13,20 @@ Todas as entidades de negocio devem ter:
 
 A combinacao `(legacy_source, legacy_table, legacy_id)` deve ser unica quando a origem existir. O ID interno nunca deve ser reutilizado.
 
+### Proveniencia legada por tabela (2026-10-22)
+
+| Tabela | Chave legada | Como as linhas sao enderecadas |
+|---|---|---|
+| `schools`, `customers`, `students`, `agreements` | `legacy_source/legacy_table/legacy_id` desde `0002`/`0004` | `INSERT ... ON CONFLICT (legacy_source, legacy_table, legacy_id)` na carga |
+| `contacts` (46.829 linhas), `installments` (15.259 linhas) | desde a `0009`, com backfill | mesma chave; as linhas gravadas antes da `0009` foram carimbadas por `npm run db:backfill-legacy-provenance` (recalcula o UUID deterministico da linha de origem) |
+| `payments`, `asaas_customers`, `asaas_charges` | nao tem | UUID deterministico `uuid5(carga, "aba:linha")`; o legado nao guarda id de pagamento/cobranca e o vinculo vem de `links` (`payments.installment_id = "row:installments"`) |
+| `users` | nao tem | importacao bloqueada (`TBL_USER.ID` em `review`): a entrada exigiria politica de credencial |
+
+Regra de operacao: a chave legada so vale para uma tabela quando o dicionario declara
+`provides_legacy_id_for` nela. Criar a coluna sem carimbar as linhas antigas faz a carga seguinte
+tratar as linhas existentes como novas - por isso a ordem e sempre
+`db:migrate` -> `db:backfill-legacy-provenance --commit` -> carga.
+
 ## Escolas
 
 Tabela canonica: `schools`.

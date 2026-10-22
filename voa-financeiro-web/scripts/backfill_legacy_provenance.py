@@ -176,6 +176,42 @@ def existing_legacy_ids(cursor: Any, table: str) -> dict[str, str | None]:
     return {str(row[0]): row[1] for row in cursor.fetchall()}
 
 
+def live_provenance_columns(cursor: Any, table: str) -> tuple[bool, list[str]]:
+    """Return `(tabela existe, colunas de proveniencia ausentes)` for the connected database.
+
+    The dictionary check in `backfill_targets` reads the migration files on disk, so it passes as
+    soon as the SQL exists in the repository - even when the database never ran it. Reading the
+    live catalog keeps the failure mode a readable message instead of a psycopg `UndefinedColumn`
+    halfway through the first table.
+    """
+    cursor.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+         WHERE table_name = %s AND table_schema = ANY (current_schemas(false))
+        """,
+        (table,),
+    )
+    present = {str(row[0]) for row in cursor.fetchall()}
+    if not present:
+        return (False, list(PROVENANCE_COLUMNS))
+    return (True, [column for column in PROVENANCE_COLUMNS if column not in present])
+
+
+def require_live_columns(cursor: Any, table: str) -> None:
+    """Raise the actionable error when the canonical database still lacks 0009."""
+    exists, missing = live_provenance_columns(cursor, table)
+    if not missing:
+        return
+    if not exists:
+        raise StagingError(
+            f"{table}: tabela nao existe no canonico; rode `npm run db:migrate` antes do backfill"
+        )
+    raise StagingError(
+        f"{table}: colunas ausentes no banco {missing}; rode `npm run db:migrate` (migration 0009) "
+        "antes do backfill"
+    )
+
+
 def staged_candidates(
     cursor: Any,
     batch_id: str,
@@ -236,6 +272,7 @@ def run_backfill(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             result["batch_id"] = batch["id"]
             result["batch_status"] = batch["status"]
             for table, target in targets.items():
+                require_live_columns(canonical.cursor(), table)
                 candidates, blanks = staged_candidates(staging.cursor(), batch["id"], target)
                 planned = plan_backfill(candidates, existing_legacy_ids(canonical.cursor(), table))
                 stamped = 0

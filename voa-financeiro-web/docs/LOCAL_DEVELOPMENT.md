@@ -20,6 +20,7 @@ python -m pip install -r scripts/requirements.txt
 - `npm run db:field-dictionary-check` faz o mesmo com `--from-staging --gate approved`, comparando as colunas do workbook com o payload do lote e falhando enquanto houver decisao pendente.
 - `npm run db:load-canonical` executa a carga canonica (fase 7) como dry-run: monta o plano por entidade, conta as linhas e registra os achados sem escrever nada.
 - `npm run db:load-canonical-commit` faz a carga real (`--commit`). Ela e idempotente e aceita `--allow-proposed contacts` para liberar explicitamente um mapeamento ainda marcado como `proposed`.
+- `npm run db:backfill-legacy-provenance` carimba `legacy_source`/`legacy_table`/`legacy_id` nas linhas de `contacts` e `installments` que foram gravadas antes da `0009`, recalculando o UUID deterministico (`uuid5("aba:linha")`) de cada linha de origem; dry-run por padrao, grava com `--commit`. Ele so reporta divergencia (linha com chave gravada diferente da origem) e nunca sobrescreve. A ordem e `db:migrate` -> backfill `--commit` -> carga: habilitar o provedor de chave legada antes do carimbo faz a carga recusar as linhas existentes como duplicidade.
 
 Os scripts leem `DATABASE_URL`/`DIRECT_DATABASE_URL` do `.env` do monorepo e nunca imprimem valores de colunas sensiveis.
 

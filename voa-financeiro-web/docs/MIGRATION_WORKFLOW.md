@@ -342,7 +342,7 @@ classes D) sairam com a `apps/api/migrations/0009_contacts_installments_legacy_p
 | `contacts` | `TBL_CLIENTEENDTEL` | 46.829 de 54.782 | `legacy_source`, `legacy_table`, `legacy_id` + indice unico |
 | `installments` | `TBL_PAGAMENTO_LISTAGEM` | 15.259 de 15.535 | `legacy_source`, `legacy_table`, `legacy_id` + indice unico |
 
-Tres pontos de operacao:
+Quatro pontos de operacao:
 
 1. A migration e **inerte** para a carga: `load_canonical_batch.py` so usa a chave legada quando o
    dicionario declara `provides_legacy_id_for` para a tabela. Foi o que permitiu aplicar a `0009`
@@ -355,11 +355,24 @@ Tres pontos de operacao:
 3. So depois do backfill as colunas `ID` das duas abas viraram `map` com `provides_legacy_id_for`.
    Na ordem inversa a carga tentaria reinserir as linhas existentes e o banco recusaria pela chave
    natural (`installments` por `(agreement_id, installment_number)`).
+4. O backfill confere a `0009` **no banco conectado**, e nao apenas nos arquivos de migration: ele
+   consulta `information_schema.columns` no `current_schemas(false)` e, se as colunas (ou a tabela)
+   nao existirem, sai com `exit 3` e um erro acionavel:
+
+   ```json
+   {"ok": false, "error": "contacts: colunas ausentes no banco ['legacy_source', 'legacy_table', 'legacy_id']; rode `npm run db:migrate` (migration 0009) antes do backfill"}
+   ```
+
+   Sem essa checagem o erro seria um `UndefinedColumn` do psycopg no meio da primeira tabela.
+   Verificado nos dois modos (tabela ausente e tabela sem as colunas) contra um banco descartavel.
 
 Validacao: `python scripts\load_canonical_batch.py` (dry-run) reusou as `104.709` linhas
 (`inserted=0`, `reused=104.709`) e `canonical_before == canonical_after` em todas as tabelas;
 o dicionario foi para `38 map`, `78 ignore`, `734 defer`, `6 review` (`0` problema estrutural e
-`0` divergencia de staging) e a suite Python foi para `198` testes.
+`0` divergencia de staging) e a suite Python foi para `204` testes (as `6` novas cobrem a checagem
+do schema vivo). As migrations tambem foram aplicadas do zero: `npm run test:integration` com
+`TEST_DATABASE_URL` roda `applyMigrations` num schema temporario e passou com `21` testes, e
+`npm run db:migrate` no banco existente reporta `0 aplicadas, 9 ja aplicadas`.
 
 ### Decisao de `billing_type` e `environment` das cobrancas
 

@@ -12,8 +12,10 @@ from backfill_legacy_provenance import (
     apply_backfill,
     backfill_targets,
     legacy_id_of,
+    live_provenance_columns,
     plan_backfill,
     render_report,
+    require_live_columns,
     staged_candidates,
 )
 from load_canonical_batch import (
@@ -110,6 +112,47 @@ class TargetTests(unittest.TestCase):
         for column in PROVENANCE_COLUMNS:
             self.assertIn(column, schema["contacts"], column)
             self.assertIn(column, schema["installments"], column)
+
+
+class LiveSchemaTests(unittest.TestCase):
+    """The 0009 check has to read the connected database, not only the migration files."""
+
+    def test_all_provenance_columns_present_returns_nothing(self) -> None:
+        cursor = FakeCursor(pages=[[("id",), ("legacy_source",), ("legacy_table",), ("legacy_id",)]])
+        self.assertEqual(live_provenance_columns(cursor, "contacts"), (True, []))
+        statement, params = cursor.statements[0]
+        self.assertIn("information_schema.columns", statement)
+        self.assertIn("current_schemas(false)", statement)
+        self.assertEqual(params, ("contacts",))
+
+    def test_partial_columns_report_only_the_missing_ones(self) -> None:
+        cursor = FakeCursor(pages=[[("legacy_source",)]])
+        self.assertEqual(
+            live_provenance_columns(cursor, "installments"), (True, ["legacy_table", "legacy_id"])
+        )
+
+    def test_a_missing_table_is_reported_as_absent(self) -> None:
+        cursor = FakeCursor(pages=[[]])
+        self.assertEqual(
+            live_provenance_columns(cursor, "contacts"), (False, list(PROVENANCE_COLUMNS))
+        )
+
+    def test_require_live_columns_raises_an_actionable_error(self) -> None:
+        cursor = FakeCursor(pages=[[("legacy_source",), ("id",)]])
+        with self.assertRaises(StagingError) as caught:
+            require_live_columns(cursor, "contacts")
+        self.assertIn("db:migrate", str(caught.exception))
+        self.assertIn("legacy_table", str(caught.exception))
+
+    def test_require_live_columns_explains_a_missing_table(self) -> None:
+        cursor = FakeCursor(pages=[[]])
+        with self.assertRaises(StagingError) as caught:
+            require_live_columns(cursor, "contacts")
+        self.assertIn("tabela nao existe", str(caught.exception))
+
+    def test_require_live_columns_is_silent_when_the_migration_ran(self) -> None:
+        cursor = FakeCursor(pages=[[("legacy_source",), ("legacy_table",), ("legacy_id",)]])
+        self.assertIsNone(require_live_columns(cursor, "installments"))
 
 
 class LegacyIdTests(unittest.TestCase):
