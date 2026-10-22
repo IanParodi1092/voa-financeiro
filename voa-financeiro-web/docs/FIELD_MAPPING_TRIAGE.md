@@ -1,31 +1,41 @@
 # Triagem das pendencias `review` do dicionario (fase 2)
 
 - Data da triagem: `2026-10-22`
-- Dicionario: `scripts/legacy_field_map.json` (60 abas, 856 colunas: 36 `map`, 76 `ignore`, 713 `defer`, 31 `review`)
+- Status: **classes A, B e E aplicadas** (22 colunas saiu de `review`), migration `0009` criada e backfill de proveniencia executado; classe A' (`Pagamento_Nome -> agreements.reference`) segue aguardando confirmacao
+- Dicionario: `scripts/legacy_field_map.json` (60 abas, 856 colunas: 38 `map`, 78 `ignore`, 734 `defer`, 6 `review`)
 - Lote de staging consultado: `4609c071-03c3-47fb-beff-5c3bcad6367e` (`committed`, 546.346 linhas) no Postgres local
 - Relatorios de referencia: `docs/FIELD_MAPPING_DICTIONARY.md` (gerado), `docs/CANONICAL_LOAD_REPORT.md`, `docs/STAGING_VALIDATION_REPORT.md`
-- Schema comparado: `apps/api/migrations/0001..0008`. Nenhuma migration tem `installments.legacy_id`, `contacts.legacy_id`, `agreements.closed_at`, `users.legacy_id`, nem contato/endereco de escola ou de aluno
+- Schema comparado: `apps/api/migrations/0001..0009`. A `0009` passou a prover `installments.legacy_*` e `contacts.legacy_*`; seguem sem coluna `agreements.closed_at`, `users.legacy_id`, contato de aluno e endereco/contato de escola
 
 Este documento responde duas perguntas por coluna: **o que a coluna e** (com dado do proprio lote, nao com o nome) e **qual decisao fecha a pendencia**, junto do efeito no portao de aprovacao. Nada aqui grava no banco: as consultas foram `select` no staging e as propostas sao edicoes no JSON do dicionario.
 
 ## Leitura rapida
 
-- **23 das 31** colunas podem sair de `review` com a evidencia que ja existe (classes A, A', B e E): 6 nao tem destino canonico, 1 tem destino livre e so precisa de confirmacao, 10 herdam a decisao de 2026-09-25 e 6 sao endereco de escola sem tabela.
-- **8 continuam bloqueando de proposito**: 6 exigem migration nova (`installments.legacy_id` duas vezes, `contacts.legacy_id`, `agreements.closed_at`, contato de aluno, `users.legacy_id`) e 2 sao politica de identidade (CPF e nome do responsavel financeiro).
-- Aplicar A+B+E leva `review` de 31 para 9 e **nao** abre o portao: `db:field-dictionary-check` continua saindo com `2`.
+- **22 das 31** colunas sairam de `review` com a evidencia que ja existia (classes A, B e E): 6 sem destino canonico, 10 herdando a decisao de 2026-09-25 e 6 de endereco de escola sem tabela.
+- **6 continuam bloqueando de proposito**: 2 sao politica de identidade (CPF e nome do responsavel financeiro) e 4 dependem de schema novo (`agreements.closed_at`, contato de aluno, `users.legacy_id` e a classe A' ainda nao confirmada).
+- O portao continua em `exit 2` (6 itens). O que mudou e o que ele mede: as 22 colunas agora estao descritas no dicionario em vez de esperar decisao.
 - A unica proposta que muda dado canonico em carga futura e `TBL_PAGAMENTO.Pagamento_Nome -> agreements.reference` (hoje nenhuma coluna escreve em `agreements.reference`). Ela entra como `status: "proposed"`, que tambem bloqueia, ate o operador confirmar.
-- `TBL_DIVIDA` (6.868 linhas) e `TBL_DIVIDA_LISTAGEM` (42.886 linhas) continuam fora do canonico (`no_mapping` no relatorio da carga). Isso nao e pendencia de dicionario: e escopo - inadimplencia nao esta modelada.
+- `TBL_DIVIDA` (6.868 linhas) e `TBL_DIVIDA_LISTAGEM` (42.886 linhas) continuam fora do canonico (`no_mapping` no relatorio da carga) e agora estao registradas assim no dicionario (`defer: no_canonical_destination`). Isso nao e pendencia de dicionario: e escopo - inadimplencia nao esta modelada.
 
 ## Resumo por classe
 
-| Classe | Itens | O que e | Decisao proposta |
-|---|---:|---|---|
-| A | 6 | semantica agora comprovada, sem destino canonico | `ignore` ou `defer` com motivo do vocabulario |
-| A' | 1 | semantica comprovada **e** destino canonico livre | `map: agreements.reference` com `status: proposed` |
-| B | 10 | herdam a decisao de 2026-09-25 (`agreements` vem de `TBL_PAGAMENTO`) | `defer: no_canonical_destination` |
-| C | 2 | politica de identidade (nome e CPF do responsavel) | **manter `review`** |
-| D | 6 | exigem migration nova | **manter `review`** ate a migration |
-| E | 6 | endereco de escola: semantica clara, tabela inexistente | `defer: address_not_modeled` |
+| Classe | Itens | O que e | Decisao | Status |
+|---|---:|---|---|---|
+| A | 6 | semantica agora comprovada, sem destino canonico | `ignore`/`defer` com motivo do vocabulario | aplicada |
+| A' | 1 | semantica comprovada **e** destino canonico livre | `map: agreements.reference` com `status: proposed` | pendente (aguarda o operador) |
+| B | 10 | herdam a decisao de 2026-09-25 (`agreements` vem de `TBL_PAGAMENTO`) | `defer: no_canonical_destination` | aplicada |
+| C | 2 | politica de identidade (nome e CPF do responsavel) | manter `review` | bloqueada por politica |
+| D | 6 | exigem migration ou dependem da classe B | migration + backfill | 2 aplicadas na `0009`, 1 fechada por B, 3 pendentes |
+| E | 6 | endereco de escola: semantica clara, tabela inexistente | `defer: address_not_modeled` | aplicada |
+
+### O que esta aplicado (2026-10-22)
+
+- 22 colunas reescritas em `scripts/legacy_field_map.json` (A + B + E), com nota de evidencia em cada uma e sem mudar nenhum `map` existente.
+- `TBL_DIVIDA_LISTAGEM.ID` saiu de `review` junto com a classe B: com a aba fora do canonico o id do item nao tem destino, entao o gap `installments_legacy_id` nao se aplica a ele.
+- Gap `agreements_source_resolution` mantido como referencia, com descricao reescrita ("resolvido em 2026-09-25"); gaps `installments_legacy_id` e `contacts_legacy_id` marcados como resolvidos pela `0009` + backfill.
+- Migration `apps/api/migrations/0009_contacts_installments_legacy_provenance.sql`: colunas `legacy_source/legacy_table/legacy_id` + indice unico em `contacts` e `installments`.
+- `scripts/backfill_legacy_provenance.py` (+ `npm run db:backfill-legacy-provenance`): carimbou 46.829 `contacts` e 15.259 `installments` (0 divergencias, 0 a carimbar na segunda rodada) e as duas colunas `ID` viraram `map` com `provides_legacy_id_for`.
+
 
 
 ## Classe A - semantica comprovada, sem destino canonico (6)
@@ -74,14 +84,14 @@ Essas duas sao tambem a guarda do dicionario: `scripts/test_build_field_dictiona
 
 | Aba | Coluna | Gap | Volume no lote | O que a migration precisa |
 |---|---|---|---:|---|
-| `TBL_CLIENTEENDTEL` | `ID` | `contacts_legacy_id` | 54.782 ids; 46.829 contatos carregados sem rastreabilidade | `contacts.legacy_source/legacy_table/legacy_id` + `UNIQUE`, igual a `customers`; hoje a idempotencia depende do UUID deterministico |
-| `TBL_PAGAMENTO_LISTAGEM` | `ID` | `installments_legacy_id` | 15.535 ids distintos | `installments.legacy_*`; hoje a parcela so e rastreavel por `(agreement_id, installment_number)` |
-| `TBL_PAGAMENTO` | `Pagamento_DataFechamento` | `agreements_closed_at` | 1.497 de 1.572 preenchidos | `agreements.closed_at` (ou `signed_at`) |
-| `TBL_ENDTEL` | `ENDTEL_ALUNO_ID` | `students_contact` | 47.561 de 47.562 preenchidos em 6.894 alunos | `contacts.customer_id` e `NOT NULL`, entao contato de aluno exige tabela propria (`student_contacts`) ou `contacts` polimorfico |
-| `TBL_USER` | `ID` | `users_legacy_import` | 28 usuarios | `users.legacy_id` **e** politica de credencial: o legado nao tem `password_hash` utilizavel, a entrada tem de ser convite/reset |
-| `TBL_DIVIDA_LISTAGEM` | `ID` | `installments_legacy_id` | 42.886 ids distintos | nada, se a classe B for aceita: com a aba fora do canonico a coluna vira `defer` junto com as irmas |
+| `TBL_CLIENTEENDTEL` | `ID` | `contacts_legacy_id` | 54.782 ids; 46.829 contatos carregados | **resolvido**: `contacts.legacy_*` + indice unico na `0009`, carimbado pelo backfill e mapeado com `provides_legacy_id_for: contacts` |
+| `TBL_PAGAMENTO_LISTAGEM` | `ID` | `installments_legacy_id` | 15.535 ids distintos; 15.259 parcelas carregadas | **resolvido**: `installments.legacy_*` + indice unico na `0009`, carimbado pelo backfill e mapeado com `provides_legacy_id_for: installments` |
+| `TBL_PAGAMENTO` | `Pagamento_DataFechamento` | `agreements_closed_at` | 1.497 de 1.572 preenchidos | pendente: `agreements.closed_at` (ou `signed_at`) |
+| `TBL_ENDTEL` | `ENDTEL_ALUNO_ID` | `students_contact` | 47.561 de 47.562 preenchidos em 6.894 alunos | pendente: `contacts.customer_id` e `NOT NULL`, entao contato de aluno exige tabela propria (`student_contacts`) ou `contacts` polimorfico |
+| `TBL_USER` | `ID` | `users_legacy_import` | 28 usuarios | pendente: `users.legacy_id` **e** politica de credencial: o legado nao tem `password_hash` utilizavel, a entrada tem de ser convite/reset |
+| `TBL_DIVIDA_LISTAGEM` | `ID` | `installments_legacy_id` | 42.886 ids distintos | **fechado pela classe B**: com a aba fora do canonico a coluna virou `defer: no_canonical_destination` e nao precisa de coluna nova |
 
-A ordem de valor e: `installments_legacy_id` e `contacts_legacy_id` (rastreabilidade de 62.088 linhas ja carregadas: 46.829 `contacts` + 15.259 `installments`), depois `agreements_closed_at`, depois contato de aluno e usuarios.
+A migration `0009` foi aplicada de forma deliberadamente estreita: so os dois `legacy_id` que davam rastreabilidade a 62.088 linhas ja carregadas. `agreements.closed_at`, `student_contacts` e `users.legacy_id` continuam em aberto - os tres exigem decisao de produto (data de fechamento, modelo de contato de aluno e politica de credencial), nao so schema.
 
 ## Classe E - endereco de escola: semantica clara, falta tabela (6)
 
@@ -99,30 +109,36 @@ Proposta: `defer: address_not_modeled`, mantendo o gap `schools_contact_address`
 
 | Cenario | Colunas `review` | Itens no portao | `db:field-dictionary-check` |
 |---|---:|---:|---|
-| Hoje | 31 | 31 | exit `2` (aprovacao bloqueada) |
-| A (6) + B (10) + E (6) | 9 | 9 | exit `2` |
-| + A' com `status: "proposed"` | 8 | 9 (8 `review` + 1 `MAPPING_NOT_CONFIRMED`) | exit `2` |
-| + A' confirmada | 8 | 8 | exit `2` |
-| + `TBL_DIVIDA_LISTAGEM.ID` junto de B e os 5 gaps reais resolvidos por migration | 2 | 2 | exit `2` |
+| Antes da triagem | 31 | 31 | exit `2` (aprovacao bloqueada) |
+| A (6) + B (10) + E (6) aplicadas | 8 | 8 | exit `2` |
+| + `0009` + backfill (`contacts`/`installments.legacy_id`) | 6 | 6 | exit `2` - **estado atual** |
+| + A' com `status: "proposed"` | 5 | 6 (5 `review` + 1 `MAPPING_NOT_CONFIRMED`) | exit `2` |
+| + A' confirmada | 5 | 5 | exit `2` |
+| + `agreements_closed_at`, contato de aluno e `users.legacy_id` | 2 | 2 | exit `2` |
 | + decisao de identidade da classe C | 0 | 0 | exit `0` |
 
-As contagens acima foram conferidas rodando o builder sobre um clone do dicionario em `%TEMP%` (nenhuma alteracao no arquivo versionado): `36 map`, `78 ignore`, `733 defer`, `9 review`, `0` problema estrutural; com A', `37 map` e `8 review`, e o portao listando os 9 itens.
+Numeros medidos no estado atual: `38 map`, `78 ignore`, `734 defer`, `6 review`, `0` problema estrutural, `0` divergencia de staging; o portao lista 6 `REVIEW_REQUIRED` (`Aluno.Responsavel_Financeiro`, `Aluno.CPFResponsavel`, `ENDTEL_ALUNO_ID`, `Pagamento_Nome`, `Pagamento_DataFechamento`, `TBL_USER.ID`).
 
 O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exige que toda coluna `NOT NULL` sem `default` esteja coberta por `map`/`links`. O portao mede a qualidade do dicionario - e o lote de 2026-09-25 foi carregado com ele ainda fechado. Fechar as classes A, B e E e o que torna o dicionario descritivo do que ja foi carregado; as classes C e D so fecham com trabalho novo (revisao assistida e migration).
 
-## Como aplicar (depois da confirmacao)
+## Como foi aplicado
 
-1. Editar `scripts/legacy_field_map.json` nas colunas listadas em A, B e E (A' so depois de decidida).
-2. Regravar o relatorio e reconferir:
+1. `scripts/legacy_field_map.json`: classes A, B e E reescritas com nota de evidencia por coluna (nenhum `map` existente mudou).
+2. `apps/api/migrations/0009_contacts_installments_legacy_provenance.sql` + `npm run db:migrate` (local: `Migrations: 1 aplicadas, 8 ja aplicadas`).
+3. `python scripts\backfill_legacy_provenance.py --commit`: `contacts` 46.829 carimbados (7.953 fora do canonico), `installments` 15.259 carimbados (276 fora do canonico), 0 divergencias; segunda rodada `0` a carimbar.
+4. `TBL_CLIENTEENDTEL.ID` e `TBL_PAGAMENTO_LISTAGEM.ID` passaram a `map` com `provides_legacy_id_for` (dependem do passo 3: sem o carimbo, a carga tentaria reinserir as linhas ja gravadas e bateria na chave natural de `installments`).
+5. Revalidacao:
 
    ```powershell
-   npm run db:field-dictionary
-   python scripts\build_field_dictionary.py --from-staging --json-out "$env:TEMP\voa_field_map.json"
+   npm run db:field-dictionary      # 38 map, 78 ignore, 734 defer, 6 review
+   npm run db:field-dictionary-check # exit 2, 6 REVIEW_REQUIRED, staging_mismatches 0
+   npm run test:python              # 198 testes
+   python scripts\load_canonical_batch.py --json-out "$env:TEMP\voa_load.json"
    ```
 
-   O primeiro comando regrava `docs/FIELD_MAPPING_DICTIONARY.md` (esperado, sem A': `36 map`, `78 ignore`, `733 defer`, `9 review`); o segundo tem de sair com `exit 0` e `0` divergencia de staging.
+   A carga em `dry-run` reusou todas as linhas (`inserted=0`, `reused=104.709`) e `canonical_before == canonical_after` em todas as tabelas: e a prova de que o backfill fechou a reconciliacao por chave legada.
 
-3. Rodar os testes dos scripts: `npm run test:python` (a suite do dicionario usa o mapa real e exige `structural == []`).
+Ordem obrigatoria para qualquer ambiente novo: `db:migrate` (0009) -> `db:backfill-legacy-provenance --commit` -> carga. Habilitar o provedor antes do backfill faz a carga recusar as linhas existentes como duplicidade.
 
 Exemplo de edicao por classe (linha atual -> proposta):
 
@@ -143,12 +159,12 @@ Exemplo de edicao por classe (linha atual -> proposta):
 
 ## Decisoes pedidas ao operador
 
-1. **Classe A (6 colunas)**: aceitar `ignore`/`defer` como acima? Sao as unicas seis em que a semantica ficou evidente pelo dado (`Aluno_AnoDivida` e inferencia: "ano de referencia da divida").
-2. **Classe A' (`Pagamento_Nome`)**: gravar o rotulo do lote em `agreements.reference`? Se sim, com `status: "proposed"` e depois `confirmed`. Nuance de operacao: os 1.505 acordos ja existem, e a carga reusa a linha pela chave legada, entao `reference` so e preenchida numa rodada `--commit --enrich-reused` (o `UPDATE` usa `COALESCE(coluna, %s)`, ou seja, nunca sobrescreve valor existente).
-3. **Classe B (10 colunas)**: registrar `TBL_DIVIDA`/`TBL_DIVIDA_LISTAGEM` como fora do canonico (inadimplencia nao modelada) e reescrever o gap `agreements_source_resolution` como resolvido? Se a resposta for "nao, dividas entram no canonico", o caminho e outro: nova entidade `debts` + `debt_items` e as 10 colunas voltam a `map`.
-4. **Classe E (6 colunas)**: endereco de escola entra em algum momento? Se sim, o caminho e migration de `school_addresses` (com CEP normalizado para 8 digitos); registrar `defer` agora nao impede.
-5. **Classe C (2 colunas)**: manter bloqueado, criar fluxo de revisao assistida de responsavel financeiro, ou aceitar vinculo automatico por CPF valido (9.000+ linhas) e nome como desempate?
-6. **Classe D (5 gaps de schema)**: autorizar uma migration `0009` com `installments.legacy_id`, `contacts.legacy_id`, `agreements.closed_at`, `student_contacts` e `users.legacy_id`? Sem ela o dicionario nunca fecha (o portao fica em `2`), mas nada impede a operacao das telas.
+1. **Classe A (6 colunas)** - **aceita** em 2026-10-22: `ignore`/`defer` como acima. Sao as unicas seis em que a semantica ficou evidente pelo dado (`Aluno_AnoDivida` e inferencia: "ano de referencia da divida").
+2. **Classe A' (`Pagamento_Nome`)** - **pendente**: gravar o rotulo do lote em `agreements.reference`? Se sim, com `status: "proposed"` e depois `confirmed`. Nuance de operacao: os 1.505 acordos ja existem, e a carga reusa a linha pela chave legada, entao `reference` so e preenchida numa rodada `--commit --enrich-reused` (o `UPDATE` usa `COALESCE(coluna, %s)`, ou seja, nunca sobrescreve valor existente).
+3. **Classe B (10 colunas)** - **aceita** em 2026-10-22: `TBL_DIVIDA`/`TBL_DIVIDA_LISTAGEM` registradas como fora do canonico (inadimplencia nao modelada) e gap `agreements_source_resolution` reescrito como resolvido. Se um dia dividas entrarem no canonico, o caminho e nova entidade `debts` + `debt_items` e as 10 colunas voltam a `map`.
+4. **Classe E (6 colunas)** - **aceita** em 2026-10-22: `defer: address_not_modeled`. Quando endereco de escola entrar, o caminho e migration de `school_addresses` (com CEP normalizado para 8 digitos); o `defer` de hoje nao impede.
+5. **Classe C (2 colunas)** - **em aberto**: manter bloqueado, criar fluxo de revisao assistida de responsavel financeiro, ou aceitar vinculo automatico por CPF valido (9.000+ linhas) e nome como desempate?
+6. **Classe D** - **parcialmente aceita** em 2026-10-22: a migration `0009` saiu so com `installments.legacy_id` + `contacts.legacy_id` (as duas que davam rastreabilidade ao que ja estava carregado). `agreements.closed_at`, `student_contacts` e `users.legacy_id` seguem em aberto; sem elas o portao fica em `2`, mas nada impede a operacao das telas.
 
 ## Reproducao das consultas
 

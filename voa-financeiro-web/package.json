@@ -19,6 +19,7 @@
     "db:field-dictionary-check": "python scripts/build_field_dictionary.py --from-staging --gate approved",
     "db:load-canonical": "python scripts/load_canonical_batch.py",
     "db:load-canonical-commit": "python scripts/load_canonical_batch.py --commit",
+    "db:backfill-legacy-provenance": "python scripts/backfill_legacy_provenance.py",
     "db:audit-app-sources": "python scripts/audit_legacy_app_sources.py",
     "test:python": "python -m unittest discover -s scripts -p \"test_*.py\""
   },

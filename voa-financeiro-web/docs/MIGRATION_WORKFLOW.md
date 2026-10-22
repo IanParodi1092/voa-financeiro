@@ -9,10 +9,10 @@
 - O lote completo `VOA.xlsx` da revisao anterior (419.700 linhas em 39 abas) esta em staging no Supabase e ja passou por validacao. A revisao de 2026-09-25 20:01 (`VOA.xlsx`, **60 abas e 546.346 linhas**) **esta estagiada e validada no Postgres local** (lote `4609c071-03c3-47fb-beff-5c3bcad6367e`), com o dicionario conferido (`0` divergencia de coluna e `1` aba vazia) e a carga canonica (fase 7) **executada e commitada no Postgres local** (104.709 linhas, lote marcado `committed`); o ensaio revelou e corrigiu um erro de ordenacao das abas que descartava 24 contatos - ver "Carga canonica local da revisao de 20:01". O mesmo commit no Supabase segue pendente porque ele entrou em somente-leitura por cota de disco - ver "Incidente de disco no staging" e "Staging local + canonico no Supabase".
 - A validacao registra achados por aba/campo, marca linhas com erro e atualiza `reconciliation_reports`.
 - O relatorio consolidado da ultima validacao esta em `docs/STAGING_VALIDATION_REPORT.md`.
-- O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 36 `map`, 76 `ignore`, 713 `defer` e 31 `review`.
+- O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 38 `map`, 78 `ignore`, 734 `defer` e 6 `review`.
 - A comparacao entre o Canvas App legado e as planilhas esta em `docs/LEGACY_APP_SOURCE_GAPS.md`, gerada por `scripts/audit_legacy_app_sources.py` (`npm run db:audit-app-sources`): 2 tabelas lidas pela app nao tem aba (`TBL_CONSULTA` e `TBL_EMAILISTACONTATO`, deixadas fora de proposito), 2 campos de negocio faltam nas abas que existem (`CONTA_NOME`, `EMPRESA_ID`), 3 tabelas tem o conteudo em aba irma (`_FINANCEIRO`) e 5 fontes fora do Dataverse (conectores e Excel Online) nunca estiveram no workbook.
 - O relatorio do dicionario esta em `docs/FIELD_MAPPING_DICTIONARY.md`, gerado por `scripts/build_field_dictionary.py`.
-- A triagem das 31 colunas `review` esta em `docs/FIELD_MAPPING_TRIAGE.md`: o que cada uma e no dado do lote, a decisao proposta por classe (sem destino canonico, decisao ja tomada em 2026-09-25, politica de identidade, schema faltando, endereco de escola) e o impacto de cada aceite no portao.
+- A triagem das colunas `review` esta em `docs/FIELD_MAPPING_TRIAGE.md`: o que cada uma e no dado do lote, a decisao por classe (sem destino canonico, decisao ja tomada em 2026-09-25, politica de identidade, schema faltando, endereco de escola) e o impacto de cada aceite no portao. Em 2026-10-22 o operador aceitou as classes A, B e E: **22 colunas sairam de `review`** e a classe D foi aprovada de forma estreita (migration `0009` so com `contacts.legacy_id` e `installments.legacy_id`).
 - A carga canonica (fase 7) esta em `scripts/load_canonical_batch.py`, com dry-run por padrao. Em 2026-09-25 ela carregou 78.217 linhas de `schools`, `customers`, `contacts` e `students` e, na mesma data, a cadeia financeira (`agreements`, `installments`, `payments`, `asaas_customers` e o cliente pagador sintetizado) com `agreements.total_amount` fechando exatamente com a soma de `installments.original_amount`; o relatorio da ultima rodada esta em `docs/CANONICAL_LOAD_REPORT.md`. Com os 22 mapeamentos `proposed` confirmados pelo operador em 2026-09-25, a proxima execucao **nao** precisa mais de `--allow-proposed` (a flag segue aceita para reproduzir a carga historica).
 - O profiler esta em `scripts/profile_legacy_workbook.py`.
 - O importador de staging esta em `scripts/stage_legacy_workbook.py`.
@@ -24,7 +24,7 @@
 ## Fases obrigatorias
 
 1. **Perfil** (concluido): contar registros, colunas, vazios, duplicidades e campos sensiveis.
-2. **Dicionario** (concluido com pendencias): cada coluna legada recebe decisao explicita (`map`, `ignore`, `defer` ou `review`) em `scripts/legacy_field_map.json`, com tipo, normalizacao e motivo. As colunas `review` bloqueiam a aprovacao do lote; os mapeamentos `proposed` bloqueiam ate serem confirmados (em 2026-09-25 o operador confirmou os 22 mapeamentos e agregados que estavam `proposed`, o que derrubou o gate de 55 para 37 itens; depois disso a triagem de `docs/FIELD_MAPPING_TRIAGE.md` deixou 31 `review`, todos ainda bloqueando).
+2. **Dicionario** (concluido com pendencias): cada coluna legada recebe decisao explicita (`map`, `ignore`, `defer` ou `review`) em `scripts/legacy_field_map.json`, com tipo, normalizacao e motivo. As colunas `review` bloqueiam a aprovacao do lote; os mapeamentos `proposed` bloqueiam ate serem confirmados (em 2026-09-25 o operador confirmou os 22 mapeamentos e agregados que estavam `proposed`, o que derrubou o gate de 55 para 37 itens; a migracao `0008` deixou 31 e a triagem de 2026-10-22, com as classes A, B, E e a `0009`, deixou 6).
 3. **Staging** (concluido para `VOA.xlsx`): carregar cada linha com origem, aba, ID legado, hash e lote de importacao.
 4. **Validacao** (concluido para `VOA.xlsx`): verificar chaves estrangeiras, documentos, nomes, datas, valores e registros sem relacionamento.
 5. **Reconciliacao** (em andamento): gerar candidatos de duplicidade e comparar contagens/totais com o workbook.
@@ -181,7 +181,7 @@ registra `migration.batch.committed` em `audit_logs`, nada mais.
 Antes de aprovar o lote e rodar a carga com UUIDs novos:
 
 1. `python scripts/build_field_dictionary.py --from-staging` sai com codigo `0` (nenhuma coluna sem decisao, nenhum destino inexistente e nenhuma divergencia de coluna entre workbook e staging).
-2. `python scripts/build_field_dictionary.py --gate approved` sai com codigo `0`: nao existe coluna `review` nem mapeamento `status: "proposed"`. Hoje ele sai com codigo `2` e 55 pendencias.
+2. `python scripts/build_field_dictionary.py --gate approved` sai com codigo `0`: nao existe coluna `review` nem mapeamento `status: "proposed"`. Hoje ele sai com codigo `2` e 6 pendencias.
 3. `migration_batches.status` do lote e alterado para aprovado somente depois do item 2.
 4. O banco canonico nao contem linhas de teste. Em 2026-09-24 existiam `schools` = 1 (legal_name `Escola Teste`) e `customers` = 1 (full_name `Ian`), ambas sem `legacy_source`/`legacy_table`/`legacy_id` e anteriores ao lote de staging; elas continuam no banco (identificaveis por `legacy_source IS NULL`) e devem ser removidas ou isoladas para nao poluir a reconciliacao:
 5. Senhas, tokens e API keys nao sao migrados; `TBL_BANCO.BANCO_APIKEY`, `TBL_USER.USER_SENHA` e `TBL_USER.USER_PASS` estao marcados como `secret_revoked` no dicionario.
@@ -332,6 +332,35 @@ reportou `enriched=0` (idempotencia real). Unico achado novo: 1 linha com
 liberado (a 0005 criou a coluna para o fluxo novo da API). O que o legado registra e o estado
 (`retention_status = 'released'`, 6.796 linhas) e a data (`retention_released_at`).
 
+### Aplicado na migration 0009 (2026-10-22)
+
+As duas lacunas de rastreabilidade que sobravam da triagem (`docs/FIELD_MAPPING_TRIAGE.md`,
+classes D) sairam com a `apps/api/migrations/0009_contacts_installments_legacy_provenance.sql`:
+
+| Tabela | Origem | Linhas carregadas | Colunas criadas |
+|---|---|---:|---|
+| `contacts` | `TBL_CLIENTEENDTEL` | 46.829 de 54.782 | `legacy_source`, `legacy_table`, `legacy_id` + indice unico |
+| `installments` | `TBL_PAGAMENTO_LISTAGEM` | 15.259 de 15.535 | `legacy_source`, `legacy_table`, `legacy_id` + indice unico |
+
+Tres pontos de operacao:
+
+1. A migration e **inerte** para a carga: `load_canonical_batch.py` so usa a chave legada quando o
+   dicionario declara `provides_legacy_id_for` para a tabela. Foi o que permitiu aplicar a `0009`
+   antes de mexer no mapa.
+2. As linhas gravadas antes da `0009` estavam enderecadas pelo UUID deterministico
+   (`uuid5("canonical-load", f"{aba}:{linha}")`). `scripts/backfill_legacy_provenance.py`
+   (`npm run db:backfill-legacy-provenance`) recalcula esse UUID e carimba a chave legada:
+   `46.829` contatos e `15.259` parcelas carimbados, `0` divergencias, `0` a carimbar na segunda
+   rodada. Linhas que a carga pulou aparecem como `missing` (7.953 contatos e 276 parcelas).
+3. So depois do backfill as colunas `ID` das duas abas viraram `map` com `provides_legacy_id_for`.
+   Na ordem inversa a carga tentaria reinserir as linhas existentes e o banco recusaria pela chave
+   natural (`installments` por `(agreement_id, installment_number)`).
+
+Validacao: `python scripts\load_canonical_batch.py` (dry-run) reusou as `104.709` linhas
+(`inserted=0`, `reused=104.709`) e `canonical_before == canonical_after` em todas as tabelas;
+o dicionario foi para `38 map`, `78 ignore`, `734 defer`, `6 review` (`0` problema estrutural e
+`0` divergencia de staging) e a suite Python foi para `198` testes.
+
 ### Decisao de `billing_type` e `environment` das cobrancas
 
 - `asaas_customers.environment` e `asaas_charges.environment` ficam em `production` (decisao do
@@ -463,7 +492,7 @@ Rodado exatamente na ordem da secao acima, com `STAGING_DATABASE_URL` no `.env`:
 |---|---|
 | Staging | lote `4609c071-03c3-47fb-beff-5c3bcad6367e`, `VOA.xlsx`, **546.346 linhas em 60 abas**, `localhost:5434/voa_staging`, 21 erros de carga (redacao/duplicidade de ID legado), ~3 min |
 | Validacao | `docs/STAGING_VALIDATION_REPORT.md` regerado: 546.346 linhas em 57 abas com dados, 20 bloqueios, 30 erros e 22 avisos distintos, 76.936 linhas marcadas, 72 erros persistidos, 57 relatorios de reconciliacao; nenhum registro canonico criado |
-| Dicionario | `--from-staging --gate approved`: 60 abas, 856 colunas, `staging_mismatches = 0`, `staging_empty_sheets = 1` (so `TBL_EMAILLISTACONTATO`, que tambem e lida pela app legada e nao tem aba real), 0 problemas estruturais e as mesmas 37 pendencias `review` (exit 2) |
+| Dicionario | `--from-staging --gate approved`: 60 abas, 856 colunas, `staging_mismatches = 0`, `staging_empty_sheets = 1` (so `TBL_EMAILLISTACONTATO`, que tambem e lida pela app legada e nao tem aba real), 0 problemas estruturais e 6 pendencias `REVIEW_REQUIRED` (exit 2) |
 | Dry-run da carga | `--staging-url ...` (leitura local, escrita canonica no Supabase): 121.991 linhas avaliadas, 104.709 validas, **104.685 reutilizadas** por `legacy_id` e **apenas 24 novas**, 17.282 descartadas, 20 achados, `asaas_charges` bloqueada (`required_columns_uncovered`) e exit 4 |
 
 Leitura do dry-run, tabela a tabela (`novas` x `reutilizadas`):

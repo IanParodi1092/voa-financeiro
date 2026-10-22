@@ -9,29 +9,33 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 |---|---:|
 | Abas inventariadas | 60 |
 | Colunas inventariadas | 856 |
-| Colunas com `map` | 36 |
-| Colunas `ignore` | 76 |
-| Colunas `defer` | 713 |
-| Colunas `review` | 31 |
+| Colunas com `map` | 38 |
+| Colunas `ignore` | 78 |
+| Colunas `defer` | 734 |
+| Colunas `review` | 6 |
 | Colunas `unmapped` | 0 |
 | Problemas estruturais | 0 |
-| Itens de politica pendentes | 31 |
+| Itens de politica pendentes | 6 |
 
 ## Portao de aprovacao
 
 - Estrutural: OK. Todo mapa aponta para tabela/coluna existente no schema canonico.
-- Aprovacao: BLOQUEADA (31 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
+- Aprovacao: BLOQUEADA (6 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
 
 ## Conferencia staging x workbook
 
-Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging.
+| Aba | Tipo | Linhas no lote | Faltando no staging | Extra no staging |
+|---|---|---:|---:|---:|
+| TBL_EMAILLISTACONTATO | empty_sheet | 0 | 6 | 0 |
 
 ## Provedores de `legacy_id` por tabela canonica
 
 | Tabela | Coluna provedora |
 |---|---|
 | agreements | TBL_PAGAMENTO.ID |
+| contacts | TBL_CLIENTEENDTEL.ID |
 | customers | TBL_CLIENTE.ID, TBL_PAGAMENTO.ID |
+| installments | TBL_PAGAMENTO_LISTAGEM.ID |
 | schools | TBL_ESCOLA.ID |
 | students | TBL_ALUNO.ID |
 
@@ -48,14 +52,14 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 
 | Aba | Entidade | Colunas | map | ignore | defer | review |
 |---|---|---:|---:|---:|---:|---:|
-| TBL_ALUNO | `students` | 36 | 4 | 18 | 10 | 4 |
-| TBL_CLIENTE | `customers` | 18 | 3 | 1 | 13 | 1 |
-| TBL_CLIENTEENDTEL | `contacts` | 5 | 3 | 1 | 0 | 1 |
-| TBL_DIVIDA | `agreements` | 10 | 0 | 3 | 1 | 6 |
-| TBL_DIVIDA_LISTAGEM | `agreements` | 11 | 0 | 4 | 1 | 6 |
+| TBL_ALUNO | `students` | 36 | 4 | 19 | 11 | 2 |
+| TBL_CLIENTE | `customers` | 18 | 3 | 1 | 14 | 0 |
+| TBL_CLIENTEENDTEL | `contacts` | 5 | 4 | 1 | 0 | 0 |
+| TBL_DIVIDA | `agreements` | 10 | 0 | 3 | 7 | 0 |
+| TBL_DIVIDA_LISTAGEM | `agreements` | 11 | 0 | 4 | 7 | 0 |
 | TBL_ESCOLA | `schools` | 16 | 5 | 5 | 6 | 0 |
 | TBL_PAGAMENTO | `agreements` | 24 | 5 | 7 | 10 | 2 |
-| TBL_PAGAMENTO_LISTAGEM | `installments` | 34 | 16 | 13 | 3 | 2 |
+| TBL_PAGAMENTO_LISTAGEM | `installments` | 34 | 17 | 13 | 4 | 0 |
 | TBL_USER | `users` | 13 | 0 | 3 | 9 | 1 |
 
 ## Detalhe por aba
@@ -109,12 +113,12 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 - Entidade canonica: students
 - Tipo de linha: entity
 - Observacoes: 6.652 alunos. students.enrollment_number e students.document_number ficam vazios: TBL_ALUNO nao tem matricula nem documento do aluno. O vinculo com customers depende de CPFResponsavel e continua bloqueado (revisao).
-- Colunas: 36 (map=4, ignore=18, defer=10, review=4, unmapped=0)
+- Colunas: 36 (map=4, ignore=19, defer=11, review=2, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| Aluno_AnoDivida | review |  |  |  |  |  | semantics_unclear |
+| Aluno_AnoDivida | defer |  |  |  |  |  | ano de referencia da divida (2014..2022, com 1900 em 19 linhas e 1969 em 2): agreements e students nao tem coluna de ano; 5.066 vazios em 6.652 |
 | ID | map | students.legacy_id | legacy_id | trim | sim |  |  |
 | Aluno.Escola.ID | map | students.school_id | reference | trim | sim | schools | resolve schools.legacy_id; 6.651 preenchidos em 72 escolas |
 | Aluno.Nome | map | students.full_name | name | collapse_ws | sim |  |  |
@@ -144,7 +148,7 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 | Aluno_Quitado | ignore |  |  |  |  |  | computed_cache |
 | Attachments | ignore |  |  |  |  |  | attachment_metadata |
 | Aluno_DocPai | ignore |  |  |  |  |  | 3.754 linhas, 1 valor distinto |
-| Aluno_Contrato | review |  |  |  |  |  | 2 valores distintos em 3.755 linhas |
+| Aluno_Contrato | ignore |  |  |  |  |  | flag contrato assinado sem uso pratico (1 true em 3.755 linhas, 2.897 vazios) e sem coluna em students |
 | Aluno_DocSed | ignore |  |  |  |  |  | 3.652 linhas, 1 valor distinto |
 | Aluno_RGResponsavel | defer |  |  |  |  |  | no_canonical_destination [gap: students_guardian_details] |
 | Aluno_ResponsavelEstadoCivil | defer |  |  |  |  |  | no_canonical_destination [gap: students_guardian_details] |
@@ -167,22 +171,22 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 
 - Entidade canonica: (sem entidade canonica nesta fase)
 - Tipo de linha: helper
-- Observacoes: 9.553 linhas de planilha auxiliar de carga com nome/endereco de escola. Unico lugar com endereco de escola em volume; precisa revisao antes de virar dado canonico.
-- Colunas: 12 (map=0, ignore=4, defer=1, review=7, unmapped=0)
+- Observacoes: 9.553 linhas de planilha auxiliar de carga com nome/endereco de escola. Unico lugar com endereco de escola em volume. Triagem de 2026-10-22: `Nome Escola2` e chave derivada (ignore) e as seis colunas de endereco ficam em `defer: address_not_modeled` ate existir tabela de endereco de escola; 5.922 CEPs perderam o zero a esquerda na exportacao.
+- Colunas: 12 (map=0, ignore=5, defer=7, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
 | contador | ignore |  |  |  |  |  | staging_helper |
-| Nome Escola2 | review |  |  |  |  |  | 9.099 distintos; chave de conciliacao com TBL_ESCOLA desconhecida [gap: schools_contact_address] |
+| Nome Escola2 | ignore |  |  |  |  |  | chave derivada com ordem de palavras normalizada (DOM BOSCO COLEGIO para Colegio Dom Bosco): 9.099 distintos em 9.553 linhas, concilia com TBL_ESCOLA e nao e dado novo |
 | Nome Social | defer |  |  |  |  |  | no_canonical_destination |
 | Educ.Prof | ignore |  |  |  |  |  | constant_placeholder |
-| Endereco | review |  |  |  |  |  | semantics_unclear [gap: schools_contact_address] |
-| Numero | review |  |  |  |  |  | semantics_unclear [gap: schools_contact_address] |
-| Complemento | review |  |  |  |  |  | semantics_unclear [gap: schools_contact_address] |
-| Bairro | review |  |  |  |  |  | semantics_unclear [gap: schools_contact_address] |
-| Municipio | review |  |  |  |  |  | semantics_unclear [gap: schools_contact_address] |
-| CEP | review |  |  |  |  |  | semantics_unclear [gap: schools_contact_address] |
+| Endereco | defer |  |  |  |  |  | logradouro da escola na planilha auxiliar (9.553 linhas); schools nao tem endereco e contacts exige customer_id [gap: schools_contact_address] |
+| Numero | defer |  |  |  |  |  | numero do endereco da escola, completa Endereco e tambem nao tem tabela canonica [gap: schools_contact_address] |
+| Complemento | defer |  |  |  |  |  | complemento do endereco da escola; sem tabela canonica [gap: schools_contact_address] |
+| Bairro | defer |  |  |  |  |  | bairro do endereco da escola; sem tabela canonica [gap: schools_contact_address] |
+| Municipio | defer |  |  |  |  |  | municipio do endereco da escola; sem tabela canonica [gap: schools_contact_address] |
+| CEP | defer |  |  |  |  |  | 5.922 dos 9.553 CEPs tem 7 digitos: o zero a esquerda se perdeu na exportacao e precisa ser reposto antes de gravar [gap: schools_contact_address] |
 | ID | ignore |  |  |  |  |  | staging_helper |
 
 ### TBL_BANCO
@@ -345,7 +349,7 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 - Entidade canonica: customers
 - Tipo de linha: entity
 - Observacoes: 24.696 clientes. Nome nunca e chave: 19.780 valores distintos para 24.696 linhas. Documento mistura CPF e CNPJ e exige fila de duplicidade na carga.
-- Colunas: 18 (map=3, ignore=1, defer=13, review=1, unmapped=0)
+- Colunas: 18 (map=3, ignore=1, defer=14, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
@@ -366,7 +370,7 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 | CLIENTE_STATUS | defer |  |  |  |  |  | 12 rotulos de funil comercial, nao status de cadastro |
 | CLIENTE_ORIGEM | defer |  |  |  |  |  | crm_funnel_not_modeled |
 | CLIENTE_RESPONSAVEL | defer |  |  |  |  |  | user_link_requires_review |
-| CLIENTE_INEP | review |  |  |  |  |  | 12.171 valores distintos em 12.437 preenchidos; uso nao documentado |
+| CLIENTE_INEP | defer |  |  |  |  |  | codigo INEP de escola (8 digitos, ex. 25020846) repetido por linha de cliente: 12.171 distintos e 12.259 vazios; schools nao tem coluna INEP |
 
 ### TBL_CLIENTECONTATO
 
@@ -392,7 +396,7 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 - Entidade canonica: contacts
 - Tipo de linha: child
 - Observacoes: 54.782 telefones/e-mails de cliente: unica aba que cabe em contacts sem tabela nova. Status `confirmed` (operador, 25/09): customer_id resolvido pelo legacy_id do cliente.
-- Colunas: 5 (map=3, ignore=1, defer=0, review=1, unmapped=0)
+- Colunas: 5 (map=4, ignore=1, defer=0, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
@@ -400,7 +404,7 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 | CLIENTEENDTEL_CLIENTE_ID | map | contacts.customer_id | reference | trim | sim | customers | 54.777 preenchidos; a FK canonica e o UUID do cliente resolvido |
 | CLIENTEENDTEL_TIPO | map | contacts.type | code | value_map_ci |  |  | 2 valores distintos; confirmar rotulos na carga [valores: telefone->phone, email->email] |
 | CLIENTEENDTEL_VALOR | map | contacts.value | text | trim | sim |  | 54.345 preenchidos; 37.809 distintos |
-| ID | review |  |  |  |  |  | 54.782 ids distintos sem destino canonico [gap: contacts_legacy_id] |
+| ID | map | contacts.legacy_id | legacy_id | trim | sim |  | 54.782 ids distintos; a migration 0009 criou as colunas legacy_* e scripts/backfill_legacy_provenance.py carimba os 46.829 contatos ja carregados antes de a carga passar a usar a chave legada |
 
 ### TBL_CLIFOR
 
@@ -498,18 +502,18 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 
 - Entidade canonica: agreements
 - Tipo de linha: entity-or-defer
-- Observacoes: 6.868 dividas. Decisao pendente: agreements.legacy_id vem de TBL_PAGAMENTO; se a decisao for por TBL_DIVIDA, os campos marcados como `pending_policy` viram mapeamento direto.
-- Colunas: 10 (map=0, ignore=3, defer=1, review=6, unmapped=0)
+- Observacoes: 6.868 dividas. Decisao do operador (25/09, registrada em 2026-10-22): agreements.legacy_id vem de TBL_PAGAMENTO, entao as colunas desta aba ficam em `defer: no_canonical_destination` e a aba continua fora do canonico (inadimplencia nao esta modelada). Reabrir exige as entidades debts/debt_items.
+- Colunas: 10 (map=0, ignore=3, defer=7, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| ID | review |  |  |  |  |  | 6.868 ids distintos; provedor de agreements ainda nao confirmado [gap: agreements_source_resolution] |
-| Divida.Aluno.ID | review |  |  |  |  |  | 6.856 preenchidos; viraria agreements.student_id [gap: agreements_source_resolution] |
-| Divida_Nome | review |  |  |  |  |  | 818 valores distintos; viraria agreements.reference [gap: agreements_source_resolution] |
-| Divida.Pagamento.ID | review |  |  |  |  |  | 1.595 vinculos divida -> acordo/pagamento [gap: agreements_source_resolution] |
-| Divida.ValorOriginalTotal | review |  |  |  |  |  | somente 47 de 6.868 preenchidos: total precisa ser derivado dos itens [gap: agreements_source_resolution] |
-| Divida.ValorAtualizadoTotal | review |  |  |  |  |  | pending_policy [gap: agreements_source_resolution] |
+| ID | defer |  |  |  |  |  | 6.868 ids distintos: a aba fica fora do canonico porque agreements.legacy_id vem de TBL_PAGAMENTO (decisao 2026-09-25) [gap: agreements_source_resolution] |
+| Divida.Aluno.ID | defer |  |  |  |  |  | 6.856 preenchidos; viraria agreements.student_id se a divida fosse o acordo, mas o acordo desta fase vem de TBL_PAGAMENTO [gap: agreements_source_resolution] |
+| Divida_Nome | defer |  |  |  |  |  | 818 valores distintos; rotulo da divida, viraria agreements.reference se a divida virasse acordo [gap: agreements_source_resolution] |
+| Divida.Pagamento.ID | defer |  |  |  |  |  | 1.595 vinculos divida -> acordo/pagamento; a ponte fica preservada no payload de staging [gap: agreements_source_resolution] |
+| Divida.ValorOriginalTotal | defer |  |  |  |  |  | somente 47 de 6.868 preenchidos: o total teria de ser derivado dos itens da divida [gap: agreements_source_resolution] |
+| Divida.ValorAtualizadoTotal | defer |  |  |  |  |  | valor corrigido: exige indice de correcao (INPC), que nao esta modelado nesta fase [gap: agreements_source_resolution] |
 | Divida.Processo.ID | defer |  |  |  |  |  | legal_process_not_modeled |
 | Divida_MinData | ignore |  |  |  |  |  | computed_cache |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
@@ -518,19 +522,19 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 
 - Entidade canonica: agreements
 - Tipo de linha: child-or-defer
-- Observacoes: 42.886 itens de divida. Se o acordo vier de TBL_PAGAMENTO, esta aba e composicao da divida (fica em staging); se o acordo vier da divida, os itens viram installments.
-- Colunas: 11 (map=0, ignore=4, defer=1, review=6, unmapped=0)
+- Observacoes: 42.886 itens de divida. Decisao do operador (25/09, registrada em 2026-10-22): agreements vem de TBL_PAGAMENTO, entao esta aba fica em staging como composicao da divida e as colunas ficam em `defer: no_canonical_destination`. O id do item deixou de exigir `installments.legacy_id`, porque a parcela canonica vem de TBL_PAGAMENTO_LISTAGEM.
+- Colunas: 11 (map=0, ignore=4, defer=7, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| ID | review |  |  |  |  |  | 42.886 ids distintos; installments nao tem legacy_id [gap: installments_legacy_id] |
-| Divida_Listagem.Divida.ID | review |  |  |  |  |  | 6.838 dividas distintas; viraria installments.agreement_id [gap: agreements_source_resolution] |
+| ID | defer |  |  |  |  |  | 42.886 ids distintos: com a aba fora do canonico o id do item nao precisa de coluna em installments (as parcelas vem de TBL_PAGAMENTO_LISTAGEM) [gap: agreements_source_resolution] |
+| Divida_Listagem.Divida.ID | defer |  |  |  |  |  | 6.838 dividas distintas; viraria installments.agreement_id se a divida virasse acordo [gap: agreements_source_resolution] |
 | Modified | ignore |  |  |  |  |  | legacy_audit_only |
-| Divida_Listagem.Vencimento | review |  |  |  |  |  | viraria installments.due_date (42.886 preenchidos) [gap: agreements_source_resolution] |
-| Divida_Listagem.Valor | review |  |  |  |  |  | viraria installments.original_amount [gap: agreements_source_resolution] |
-| Divida_Listagem.Valor_Atualizado | review |  |  |  |  |  | valor corrigido; exige regra de juros/INPC [gap: agreements_source_resolution] |
-| Divida_Listagem.Tipo_de_debito | review |  |  |  |  |  | 1.074 valores distintos, com lixo (ex.: '0', '[PIUYTREW'); precisa de classificacao [gap: installments_description] |
+| Divida_Listagem.Vencimento | defer |  |  |  |  |  | 42.886 preenchidos; viraria installments.due_date se a divida virasse acordo [gap: agreements_source_resolution] |
+| Divida_Listagem.Valor | defer |  |  |  |  |  | viraria installments.original_amount se a divida virasse acordo [gap: agreements_source_resolution] |
+| Divida_Listagem.Valor_Atualizado | defer |  |  |  |  |  | valor corrigido: exige regra de juros/INPC, que nao esta modelada nesta fase [gap: agreements_source_resolution] |
+| Divida_Listagem.Tipo_de_debito | defer |  |  |  |  |  | 1.074 valores distintos, com lixo (0, [PIUYTREW): installments nao tem tipo/descricao do debito [gap: installments_description] |
 | Divida_Listagem.Obs | defer |  |  |  |  |  | no_canonical_destination [gap: installments_description] |
 | DividaListagem_DataVencValor | ignore |  |  |  |  |  | computed_cache |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
@@ -1217,12 +1221,12 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 - Entidade canonica: installments
 - Tipo de linha: child
 - Observacoes: 15.535 parcelas de acordo. Origem confirmada de installments e payments (status `confirmed`, operador 25/09). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments/asaas_charges a parcela criada pela mesma linha de origem.
-- Colunas: 34 (map=16, ignore=13, defer=3, review=2, unmapped=0)
+- Colunas: 34 (map=17, ignore=13, defer=4, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| ID | review |  |  |  |  |  | 15.535 ids distintos; installments nao tem legacy_id [gap: installments_legacy_id] |
+| ID | map | installments.legacy_id | legacy_id | trim | sim |  | 15.535 ids distintos; a migration 0009 criou as colunas legacy_* e scripts/backfill_legacy_provenance.py carimba as 15.259 parcelas ja carregadas antes de a carga passar a usar a chave legada |
 | Pagamento_Listagem.Pagamento.ID | map | installments.agreement_id | reference | trim | sim | agreements | 15.529 preenchidos, 6 vazios, 1.508 acordos distintos |
 | Pagamento_Lista_ValorSucumbencia | defer |  |  |  |  |  | agreement_attrs_not_modeled |
 | Pagamento_Listagem.Valor_Parcela | map | installments.original_amount | numeric | money | sim |  |  |
@@ -1243,7 +1247,7 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 | Pagamento_Lista.PGTColegio | ignore |  |  |  |  |  | 2 valores distintos (flag) |
 | Modified By | ignore |  |  |  |  |  | legacy_audit_only |
 | Pagamento_Lista_Vazio | ignore |  |  |  |  |  | computed_cache |
-| Pagamento_Listagem_Tipo | review |  |  |  |  |  | 15.063 preenchidos, 2 valores distintos |
+| Pagamento_Listagem_Tipo | defer |  |  |  |  |  | Pagamento Padrao em 14.923 linhas e Pagamento Resgate Judicial em 140 (472 vazios): payments nao tem tipo e payments.source guarda a origem tecnica (manual/Asaas), nao o tipo |
 | Pagamento_Extrato_ID | defer |  |  |  |  |  | billing_integration_not_modeled |
 | Pagamento_Categoria | ignore |  |  |  |  |  | empty_column |
 | Pagamento_Banco_Status | map | asaas_charges.status | code | value_map_ci | sim |  | 9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). O vazio e o `z` caem no DEFAULT 'unknown' criado pela migration 0008 e saem como LOAD_VALUE_DEFAULTED; CARTAO ITAU entra como paid e o billing_type CREDIT_CARD fica registrado como decisao de operacao em docs/MIGRATION_WORKFLOW.md [valores: baixado->paid, pago automatico->paid, pagamento manual->paid, pago colegio->paid, cartao itau->paid, pendente->pending, atrasado->overdue] |
@@ -1520,24 +1524,18 @@ Cada coluna do workbook aparece exatamente uma vez no payload do lote de staging
 
 | Gap | Descricao | Colunas legadas afetadas |
 |---|---|---:|
-| `installments_legacy_id` | installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration nova | 2 |
+| `installments_legacy_id` | resolvido pela migration 0009 (colunas legacy_* em installments) e por scripts/backfill_legacy_provenance.py, que carimba as parcelas ja gravadas antes de a carga usar a chave legada | 0 |
 | `installments_description` | installments nao tem descricao/tipo do debito (Divida_Listagem.Tipo_de_debito, Obs) | 2 |
-| `agreements_source_resolution` | agreements.legacy_id precisa vir de uma unica origem (TBL_PAGAMENTO ou TBL_DIVIDA); decisao pendente | 10 |
+| `agreements_source_resolution` | resolvido (decisao de 2026-09-25, registrada no dicionario em 2026-10-22): agreements.legacy_id vem de TBL_PAGAMENTO; TBL_DIVIDA e TBL_DIVIDA_LISTAGEM ficam fora do canonico ate existir modelo de inadimplencia (entidade debts/debt_items) | 11 |
 | `agreements_type` | agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO) | 2 |
 | `agreements_closed_at` | agreements nao tem data de fechamento/assinatura | 1 |
-| `schools_contact_address` | schools nao tem contato nem endereco; contacts e restrito a customers | 10 |
+| `schools_contact_address` | schools nao tem contato nem endereco; contacts e restrito a customers | 9 |
 | `students_contact` | students nao tem contato proprio; contacts e restrito a customers | 21 |
 | `customers_address` | customers nao tem endereco estruturado | 7 |
 | `customers_document_type` | customers nao tem document_type (cpf/cnpj) exigido por CANONICAL_DATA_RULES.md | 1 |
-| `contacts_legacy_id` | contacts nao tem colunas legacy_*; a origem do contato se perde na carga | 1 |
+| `contacts_legacy_id` | resolvido pela migration 0009 (colunas legacy_* em contacts) e por scripts/backfill_legacy_provenance.py, que carimba os contatos ja gravados antes de a carga usar a chave legada | 0 |
 | `students_guardian_details` | students nao tem dados do responsavel (RG, profissao, estado civil) | 3 |
 | `users_legacy_import` | users exige email e password_hash; importacao do legado precisa de politica de credencial | 1 |
-
-### installments_legacy_id
-
-installments nao tem colunas legacy_*; a rastreabilidade da parcela fica em (agreement_id, installment_number) ou exige migration nova
-
-Colunas: `TBL_DIVIDA_LISTAGEM.ID`, `TBL_PAGAMENTO_LISTAGEM.ID`.
 
 ### installments_description
 
@@ -1547,9 +1545,9 @@ Colunas: `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Tipo_de_debito`, `TBL_DIVIDA_LISTA
 
 ### agreements_source_resolution
 
-agreements.legacy_id precisa vir de uma unica origem (TBL_PAGAMENTO ou TBL_DIVIDA); decisao pendente
+resolvido (decisao de 2026-09-25, registrada no dicionario em 2026-10-22): agreements.legacy_id vem de TBL_PAGAMENTO; TBL_DIVIDA e TBL_DIVIDA_LISTAGEM ficam fora do canonico ate existir modelo de inadimplencia (entidade debts/debt_items)
 
-Colunas: `TBL_DIVIDA.ID`, `TBL_DIVIDA.Divida.Aluno.ID`, `TBL_DIVIDA.Divida_Nome`, `TBL_DIVIDA.Divida.Pagamento.ID`, `TBL_DIVIDA.Divida.ValorOriginalTotal`, `TBL_DIVIDA.Divida.ValorAtualizadoTotal`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Divida.ID`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Vencimento`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Valor`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Valor_Atualizado`.
+Colunas: `TBL_DIVIDA.ID`, `TBL_DIVIDA.Divida.Aluno.ID`, `TBL_DIVIDA.Divida_Nome`, `TBL_DIVIDA.Divida.Pagamento.ID`, `TBL_DIVIDA.Divida.ValorOriginalTotal`, `TBL_DIVIDA.Divida.ValorAtualizadoTotal`, `TBL_DIVIDA_LISTAGEM.ID`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Divida.ID`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Vencimento`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Valor`, `TBL_DIVIDA_LISTAGEM.Divida_Listagem.Valor_Atualizado`.
 
 ### agreements_type
 
@@ -1567,7 +1565,7 @@ Colunas: `TBL_PAGAMENTO.Pagamento_DataFechamento`.
 
 schools nao tem contato nem endereco; contacts e restrito a customers
 
-Colunas: `TBL_AUXSUBIR.Nome Escola2`, `TBL_AUXSUBIR.Endereco`, `TBL_AUXSUBIR.Numero`, `TBL_AUXSUBIR.Complemento`, `TBL_AUXSUBIR.Bairro`, `TBL_AUXSUBIR.Municipio`, `TBL_AUXSUBIR.CEP`, `TBL_ESCOLA.Escola.Endereco`, `TBL_ESCOLA.Escola.Telefone`, `TBL_ESCOLA.Escola_Email`.
+Colunas: `TBL_AUXSUBIR.Endereco`, `TBL_AUXSUBIR.Numero`, `TBL_AUXSUBIR.Complemento`, `TBL_AUXSUBIR.Bairro`, `TBL_AUXSUBIR.Municipio`, `TBL_AUXSUBIR.CEP`, `TBL_ESCOLA.Escola.Endereco`, `TBL_ESCOLA.Escola.Telefone`, `TBL_ESCOLA.Escola_Email`.
 
 ### students_contact
 
@@ -1587,12 +1585,6 @@ customers nao tem document_type (cpf/cnpj) exigido por CANONICAL_DATA_RULES.md
 
 Colunas: `TBL_CLIENTE.CLIENTE_CNPJ`.
 
-### contacts_legacy_id
-
-contacts nao tem colunas legacy_*; a origem do contato se perde na carga
-
-Colunas: `TBL_CLIENTEENDTEL.ID`.
-
 ### students_guardian_details
 
 students nao tem dados do responsavel (RG, profissao, estado civil)
@@ -1610,16 +1602,16 @@ Colunas: `TBL_USER.ID`.
 | Codigo | Motivo | Ocorrencias | Abas | Exemplos |
 |---|---|---:|---|---|
 | `REVIEW_REQUIRED` | `name_only_link_not_allowed` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.Responsavel_Financeiro` |
-| `REVIEW_REQUIRED` | `pending_policy` | 11 | TBL_DIVIDA, TBL_DIVIDA_LISTAGEM, TBL_ENDTEL | `TBL_DIVIDA.ID`, `TBL_DIVIDA.Divida.Aluno.ID`, `TBL_DIVIDA.Divida_Nome`, `TBL_DIVIDA.Divida.Pagamento.ID` |
-| `REVIEW_REQUIRED` | `schema_gap_pending` | 5 | TBL_CLIENTEENDTEL, TBL_DIVIDA_LISTAGEM, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM, TBL_USER | `TBL_CLIENTEENDTEL.ID`, `TBL_DIVIDA_LISTAGEM.ID`, `TBL_PAGAMENTO.Pagamento_DataFechamento`, `TBL_PAGAMENTO_LISTAGEM.ID` |
-| `REVIEW_REQUIRED` | `semantics_unclear` | 13 | TBL_ALUNO, TBL_AUXSUBIR, TBL_CLIENTE, TBL_DIVIDA_LISTAGEM, TBL_PAGAMENTO, TBL_PAGAMENTO_LISTAGEM | `TBL_ALUNO.Aluno_AnoDivida`, `TBL_ALUNO.Aluno_Contrato`, `TBL_AUXSUBIR.Nome Escola2`, `TBL_AUXSUBIR.Endereco` |
+| `REVIEW_REQUIRED` | `pending_policy` | 1 | TBL_ENDTEL | `TBL_ENDTEL.ENDTEL_ALUNO_ID` |
+| `REVIEW_REQUIRED` | `schema_gap_pending` | 2 | TBL_PAGAMENTO, TBL_USER | `TBL_PAGAMENTO.Pagamento_DataFechamento`, `TBL_USER.ID` |
+| `REVIEW_REQUIRED` | `semantics_unclear` | 1 | TBL_PAGAMENTO | `TBL_PAGAMENTO.Pagamento_Nome` |
 | `REVIEW_REQUIRED` | `unreliable_document_source` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.CPFResponsavel` |
 
 ## Motivos registrados
 
 | Decisao | Motivo | Colunas | Descricao |
 |---|---|---:|---|
-| defer | `address_not_modeled` | 8 | endereco estruturado ainda nao tem tabela canonica |
+| defer | `address_not_modeled` | 14 | endereco estruturado ainda nao tem tabela canonica |
 | defer | `agreement_attrs_not_modeled` | 7 | atributo de acordo/divida sem coluna canonica (tipo, sucumbencia, percentual, repasse) |
 | defer | `bank_registry_not_modeled` | 1 | cadastro de bancos/contas nao esta modelado nesta fase |
 | defer | `billing_email_templates_not_modeled` | 7 | modelos de e-mail de cobranca nao estao modelados nesta fase |
@@ -1635,29 +1627,29 @@ Colunas: `TBL_USER.ID`.
 | defer | `inflation_index_not_modeled` | 4 | indice de correcao monetaria (INPC) e necessario ao recalculo de dividas; fase posterior |
 | defer | `legal_fees_table_not_modeled` | 4 | tabela de custas juridicas nao esta modelada nesta fase |
 | defer | `legal_process_not_modeled` | 54 | processos juridicos, publicacoes e etapas ficam para fase posterior |
-| defer | `no_canonical_destination` | 86 | sem destino canonico nesta fase; o valor permanece no payload de staging |
+| defer | `no_canonical_destination` | 100 | sem destino canonico nesta fase; o valor permanece no payload de staging |
 | defer | `out_of_scope_operations` | 24 | operacao de escritorio (agenda, tarefas) fora do escopo desta fase |
 | defer | `payables_not_modeled` | 114 | contas a pagar, fornecedores e despesas nao entram no dominio canonico desta fase |
 | defer | `recalculation_log_not_modeled` | 5 | log de recalculo de dividas nao esta modelado nesta fase |
 | defer | `route_not_modeled` | 11 | roteirizacao de visitas nao esta modelada nesta fase |
-| defer | `school_config_not_modeled` | 3 | configuracao comercial da escola (tipo de acordo, contrato, origem) nao esta modelada |
+| defer | `school_config_not_modeled` | 4 | configuracao comercial da escola (tipo de acordo, contrato, origem) nao esta modelada |
 | defer | `school_fee_not_modeled` | 8 | tabela de taxas por escola/ano nao esta modelada nesta fase |
 | defer | `student_contact_not_modeled` | 5 | contato do aluno exige tabela propria; contacts e restrito a customers |
 | defer | `user_import_requires_credential_reset` | 30 | usuario do legado entra com email novo e senha redefinida; nunca importar credencial |
 | defer | `user_link_requires_review` | 5 | vinculo com usuario exige conciliacao; nunca por nome isolado |
 | ignore | `attachment_metadata` | 2 | referencia de anexo do Dataverse; arquivos nao migram nesta fase |
-| ignore | `computed_cache` | 15 | valor derivado/recalculavel a partir das tabelas canonicas |
+| ignore | `computed_cache` | 16 | valor derivado/recalculavel a partir das tabelas canonicas |
 | ignore | `constant_placeholder` | 4 | valor constante de preenchimento; nao representa dado do dominio |
 | ignore | `denormalized_display_name` | 13 | copia do nome para exibicao na origem; o nome canonico vem da chave estrangeira |
 | ignore | `empty_column` | 15 | coluna vazia em todas as linhas da origem |
 | ignore | `legacy_audit_only` | 12 | auditoria do PowerApps/Dataverse (Created/Modified/By); a auditoria canonica nova e independente |
-| ignore | `legacy_flag` | 6 | flag operacional legado sem equivalente canonico |
+| ignore | `legacy_flag` | 7 | flag operacional legado sem equivalente canonico |
 | ignore | `secret_revoked` | 4 | segredo/credencial: nunca migrar e deve ser revogado na origem |
 | ignore | `staging_helper` | 5 | aba auxiliar de carga manual/planilha; nao representa entidade do dominio |
 | review | `name_only_link_not_allowed` | 1 | vinculo somente por nome nao e permitido; exige documento ou revisao assistida |
-| review | `pending_policy` | 11 | decisao de negocio pendente registrada na fase 2 |
-| review | `schema_gap_pending` | 5 | exige migration nova ou ajuste de schema antes da carga canonica |
-| review | `semantics_unclear` | 13 | semantica legada nao documentada; exige confirmacao de negocio |
+| review | `pending_policy` | 1 | decisao de negocio pendente registrada na fase 2 |
+| review | `schema_gap_pending` | 2 | exige migration nova ou ajuste de schema antes da carga canonica |
+| review | `semantics_unclear` | 1 | semantica legada nao documentada; exige confirmacao de negocio |
 | review | `unreliable_document_source` | 1 | documento do legado com falha de validacao; nao pode vincular automaticamente |
 
 ## Avisos (nao bloqueiam)
