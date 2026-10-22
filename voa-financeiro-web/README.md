@@ -26,6 +26,7 @@ Nenhuma credencial real, dado legado ou chamada a Asaas/ChatGuru/Supabase remoto
 - `docs/MIGRATION_WORKFLOW.md` descreve fases, regras de seguranca e comandos.
 - `docs/STAGING_VALIDATION_REPORT.md` traz o relatorio da ultima validacao de staging.
 - `docs/FIELD_MAPPING_DICTIONARY.md` traz o dicionario da fase 2 (toda coluna legada com decisao, destino, tipo e pendencia).
+- `docs/FIELD_MAPPING_TRIAGE.md` faz a triagem das colunas `review`: o que cada uma e no dado, a decisao proposta e o impacto no portao de aprovacao.
 - `docs/CANONICAL_LOAD_REPORT.md` traz o relatorio da ultima carga canonica (plano por entidade, linhas carregadas, achados e bloqueios).
 - `docs/LEGACY_APP_SOURCE_GAPS.md` compara o Canvas App legado com as planilhas: tabelas e campos que a app le e o workbook nao tem.
 - `scripts/profile_legacy_workbook.py`, `scripts/stage_legacy_workbook.py` e `scripts/validate_staging_batch.py` operam em modo somente leitura sobre as fontes e escrevem apenas tabelas de staging.
