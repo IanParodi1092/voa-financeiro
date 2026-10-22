@@ -7,6 +7,7 @@ import pg from 'pg';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { applyMigrations } from './db/run-migrations.js';
+import { patchRow } from './db/patch.js';
 import { hashPassword } from './auth/password.js';
 
 /**
@@ -278,5 +279,276 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
 
     const afterLogout = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', headers: { cookie } });
     expect(afterLogout.statusCode).toBe(401);
+  });
+
+  describe('PATCH parcial', () => {
+    const adminHeaders = async () => ({ authorization: `Bearer ${await accessTokenOf('admin@example.com')}` });
+    const financeHeaders = async () => ({ authorization: `Bearer ${await accessTokenOf('finance@example.com')}` });
+    const viewerHeaders = async () => ({ authorization: `Bearer ${await accessTokenOf('viewer@example.com')}` });
+
+    /** Cria escola -> cliente -> acordo -> parcela -> pagamento e devolve os ids. */
+    const seedPayment = async (headers: Record<string, string>) => {
+      const suffix = randomUUID().slice(0, 8);
+      const catalog = await adminHeaders();
+      const create = async (url: string, payload: Record<string, unknown>, auth: Record<string, string>) => {
+        const response = await app.inject({ method: 'POST', url, headers: auth, payload });
+        expect({ url, statusCode: response.statusCode, body: response.body }).toMatchObject({ url, statusCode: 201 });
+        return response.json() as { id: string };
+      };
+      const school = await create('/api/v1/schools', { legalName: `Colegio Patch ${suffix}` }, catalog);
+      const customer = await create('/api/v1/customers', { fullName: `Cliente Patch ${suffix}` }, catalog);
+      const agreement = await create('/api/v1/agreements', {
+        schoolId: school.id, customerId: customer.id, totalAmount: 100, installmentsCount: 1
+      }, headers);
+      const installment = await create('/api/v1/installments', {
+        agreementId: agreement.id, installmentNumber: 1, dueDate: '2026-11-10', originalAmount: 100
+      }, headers);
+      const payment = await create('/api/v1/payments', { installmentId: installment.id, amount: 100, source: 'manual' }, headers);
+      return { schoolId: school.id, customerId: customer.id, agreementId: agreement.id, installmentId: installment.id, paymentId: payment.id };
+    };
+
+    it('atualiza apenas os campos enviados e audita customer.updated', async () => {
+      const headers = await adminHeaders();
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers,
+        payload: { fullName: 'Cliente Parcial', documentNumber: '123', phone: '+55 11 90000-0000' }
+      });
+      expect(created.statusCode).toBe(201);
+      const customer = created.json() as { id: string; createdAt: string; updatedAt: string };
+
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/customers/${customer.id}`,
+        headers,
+        payload: { fullName: 'Cliente Parcial II', phone: null, email: 'Parcial@Example.COM' }
+      });
+      expect(patched.statusCode).toBe(200);
+      expect(patched.json()).toMatchObject({
+        id: customer.id,
+        fullName: 'Cliente Parcial II',
+        phone: null,
+        documentNumber: '123',
+        email: 'parcial@example.com'
+      });
+      const body = patched.json() as { createdAt: string; updatedAt: string };
+      expect(body.createdAt).toBe(customer.createdAt);
+      // `updated_at` compara no banco: o driver devolve timestamptz so com milissegundos.
+      const renewed = await pool.query<{ renewed: boolean }>(
+        'SELECT updated_at > created_at AS renewed FROM customers WHERE id = $1', [customer.id]);
+      expect(renewed.rows[0]?.renewed).toBe(true);
+
+      const audited = await pool.query<{ metadata: { actorId?: string; fields: string[] } }>(
+        `SELECT metadata FROM audit_logs WHERE action = 'customer.updated' AND entity_id = $1`, [customer.id]);
+      expect(audited.rows).toHaveLength(1);
+      expect([...(audited.rows[0]?.metadata.fields ?? [])].sort()).toEqual(['email', 'fullName', 'phone']);
+      expect(audited.rows[0]?.metadata.actorId).toBeTruthy();
+    });
+
+    it('recusa corpo vazio, campo desconhecido, id invalido e linha inexistente', async () => {
+      const headers = await adminHeaders();
+      const created = await app.inject({ method: 'POST', url: '/api/v1/schools', headers, payload: { legalName: 'Colegio Patch' } });
+      const school = created.json() as { id: string };
+
+      const empty = await app.inject({ method: 'PATCH', url: `/api/v1/schools/${school.id}`, headers, payload: {} });
+      expect(empty.statusCode).toBe(400);
+      expect(empty.json()).toMatchObject({ code: 'EMPTY_PATCH' });
+
+      const unknown = await app.inject({ method: 'PATCH', url: `/api/v1/schools/${school.id}`, headers, payload: { legal_name: 'Colegio' } });
+      expect(unknown.statusCode).toBe(400);
+      expect(unknown.json()).toMatchObject({ code: 'INVALID_REQUEST' });
+
+      const invalidId = await app.inject({ method: 'PATCH', url: '/api/v1/schools/nao-e-uuid', headers, payload: { legalName: 'Colegio Patch' } });
+      expect(invalidId.statusCode).toBe(400);
+
+      const missing = await app.inject({
+        method: 'PATCH', url: `/api/v1/schools/${randomUUID()}`, headers, payload: { legalName: 'Colegio Patch' }
+      });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toMatchObject({ code: 'NOT_FOUND' });
+    });
+
+    it('nao atualiza linha apagada logicamente', async () => {
+      const headers = await adminHeaders();
+      const created = await app.inject({ method: 'POST', url: '/api/v1/customers', headers, payload: { fullName: 'Cliente Removido' } });
+      const customer = created.json() as { id: string };
+      await pool.query('UPDATE customers SET deleted_at = now() WHERE id = $1', [customer.id]);
+
+      const patched = await app.inject({
+        method: 'PATCH', url: `/api/v1/customers/${customer.id}`, headers, payload: { fullName: 'Cliente Removido II' }
+      });
+      expect(patched.statusCode).toBe(404);
+      const stored = await pool.query<{ full_name: string }>('SELECT full_name FROM customers WHERE id = $1', [customer.id]);
+      expect(stored.rows[0]?.full_name).toBe('Cliente Removido');
+    });
+
+    it('exige catalog:write no catalogo e finance:write na cadeia financeira', async () => {
+      const admin = await adminHeaders();
+      const finance = await financeHeaders();
+      const viewer = await viewerHeaders();
+      const { schoolId, customerId, paymentId } = await seedPayment(finance);
+
+      const cases = [
+        { url: `/api/v1/schools/${schoolId}`, headers: viewer, payload: { legalName: 'Colegio Vetado' } },
+        { url: `/api/v1/customers/${customerId}`, headers: finance, payload: { fullName: 'Cliente Vetado' } },
+        { url: `/api/v1/payments/${paymentId}`, headers: viewer, payload: { retentionStatus: 'approved' } }
+      ];
+      for (const { url, headers, payload } of cases) {
+        const forbidden = await app.inject({ method: 'PATCH', url, headers, payload });
+        expect({ url, statusCode: forbidden.statusCode }).toEqual({ url, statusCode: 403 });
+      }
+
+      const byFinance = await app.inject({
+        method: 'PATCH', url: `/api/v1/payments/${paymentId}`, headers: finance, payload: { retentionStatus: 'approved' }
+      });
+      expect(byFinance.statusCode).toBe(200);
+      expect(byFinance.json()).toMatchObject({ retentionStatus: 'approved' });
+
+      const byAdmin = await app.inject({
+        method: 'PATCH', url: `/api/v1/schools/${schoolId}`, headers: admin, payload: { legalName: 'Colegio RBAC II', retentionEnabled: true }
+      });
+      expect(byAdmin.statusCode).toBe(200);
+      expect(byAdmin.json()).toMatchObject({ legalName: 'Colegio RBAC II', retentionEnabled: true });
+    });
+
+    it('grava, valida e limpa os campos de retencao do pagamento', async () => {
+      const headers = await financeHeaders();
+      const { paymentId, installmentId } = await seedPayment(headers);
+
+      const approved = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/payments/${paymentId}`,
+        headers,
+        payload: {
+          retentionStatus: 'approved',
+          retentionPercentage: 0.25,
+          retentionApprovedAt: '2026-10-01',
+          retentionScheduledMonth: '2026-11'
+        }
+      });
+      expect(approved.statusCode).toBe(200);
+      expect(approved.json()).toMatchObject({
+        id: paymentId,
+        retentionStatus: 'approved',
+        retentionPercentage: '0.2500',
+        retentionScheduledMonth: '2026-11',
+        retentionReleasedAt: null
+      });
+
+      const refusedPayloads = [
+        { retentionScheduledMonth: '2026-13' },
+        { retentionPercentage: 1.5 },
+        { retentionStatus: 'aprovado' },
+        { retainedAmount: -1 }
+      ];
+      for (const payload of refusedPayloads) {
+        const refused = await app.inject({ method: 'PATCH', url: `/api/v1/payments/${paymentId}`, headers, payload });
+        expect({ payload, statusCode: refused.statusCode }).toEqual({ payload, statusCode: 400 });
+      }
+
+      // `null` limpa a coluna; o que nao veio no corpo continua com o valor anterior.
+      const cleared = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/payments/${paymentId}`,
+        headers,
+        payload: { retentionStatus: null, retentionPercentage: null, retentionScheduledMonth: null }
+      });
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json()).toMatchObject({ retentionStatus: null, retentionPercentage: null, retentionScheduledMonth: null });
+
+      const stored = await pool.query<{ status: string | null; approved_at: string | null; released_at: string | null }>(
+        `SELECT retention_status AS status, retention_approved_at::text AS approved_at, retention_released_at::text AS released_at
+           FROM payments WHERE id = $1`,
+        [paymentId]);
+      expect(stored.rows[0]).toEqual({ status: null, approved_at: '2026-10-01', released_at: null });
+
+      const listed = await app.inject({ method: 'GET', url: `/api/v1/payments?installmentId=${installmentId}`, headers });
+      expect(listed.statusCode).toBe(200);
+      const items = (listed.json() as { items: Record<string, unknown>[] }).items;
+      expect(items[0]).toMatchObject({ id: paymentId, retentionStatus: null, retentionPercentage: null });
+      expect(items[0]).toHaveProperty('retentionScheduledMonth');
+    });
+  });
+
+  describe('patchRow', () => {
+    const installmentsTarget = { table: 'installments', returning: 'id', softDelete: true } as const;
+
+    /** Cadeia minima inserida direto no banco: as constraints so existem no PostgreSQL. */
+    const seed = async () => {
+      const suffix = randomUUID().slice(0, 8);
+      const school = await pool.query<{ id: string }>(
+        'INSERT INTO schools (legal_name) VALUES ($1) RETURNING id', [`Colegio patchRow ${suffix}`]);
+      const customer = await pool.query<{ id: string }>(
+        'INSERT INTO customers (full_name) VALUES ($1) RETURNING id', [`Cliente patchRow ${suffix}`]);
+      const schoolId = school.rows[0]?.id;
+      const customerId = customer.rows[0]?.id;
+      if (!schoolId || !customerId) throw new Error('seed failed');
+      const agreement = await pool.query<{ id: string }>(
+        'INSERT INTO agreements (school_id, customer_id, total_amount, installments_count) VALUES ($1, $2, 10, 2) RETURNING id',
+        [schoolId, customerId]);
+      const agreementId = agreement.rows[0]?.id;
+      if (!agreementId) throw new Error('seed failed');
+      const installments = await pool.query<{ id: string }>(
+        `INSERT INTO installments (agreement_id, installment_number, due_date, original_amount)
+         VALUES ($1, 1, '2026-11-10', 5), ($1, 2, '2026-12-10', 5) RETURNING id`,
+        [agreementId]);
+      const [firstInstallmentId, secondInstallmentId] = installments.rows.map((row) => row.id);
+      const student = await pool.query<{ id: string }>(
+        `INSERT INTO students (school_id, full_name) VALUES ($1, $2) RETURNING id`,
+        [schoolId, `Aluno patchRow ${suffix}`]);
+      if (!firstInstallmentId || !secondInstallmentId) throw new Error('seed failed');
+      const payment = await pool.query<{ id: string }>(
+        'INSERT INTO payments (installment_id, amount) VALUES ($1, 5) RETURNING id', [firstInstallmentId]);
+      const paymentId = payment.rows[0]?.id;
+      const studentId = student.rows[0]?.id;
+      if (!paymentId || !studentId) throw new Error('seed failed');
+      return { schoolId, agreementId, firstInstallmentId, secondInstallmentId, studentId, paymentId };
+    };
+
+    it('atualiza a linha, renova updated_at e ignora linha apagada', async () => {
+      const { schoolId, firstInstallmentId } = await seed();
+      const target = {
+        table: 'schools',
+        returning: 'id, legal_name AS "legalName", created_at AS "createdAt", updated_at AS "updatedAt"',
+        softDelete: true
+      };
+      const outcome = await patchRow(pool, target, schoolId, { legal_name: 'Colegio Renomeado' });
+      expect(outcome.status).toBe('updated');
+      if (outcome.status !== 'updated') throw new Error('unexpected outcome');
+      expect(outcome.row).toMatchObject({ id: schoolId, legalName: 'Colegio Renomeado' });
+      const renewed = await pool.query<{ renewed: boolean }>(
+        'SELECT updated_at > created_at AS renewed FROM schools WHERE id = $1', [schoolId]);
+      expect(renewed.rows[0]?.renewed).toBe(true);
+
+      await pool.query('UPDATE installments SET deleted_at = now() WHERE id = $1', [firstInstallmentId]);
+      expect(await patchRow(pool, installmentsTarget, firstInstallmentId, { due_date: '2026-12-01' }))
+        .toEqual({ status: 'not_found' });
+      expect(await patchRow(pool, installmentsTarget, randomUUID(), { due_date: '2026-12-01' }))
+        .toEqual({ status: 'not_found' });
+      await expect(patchRow(pool, installmentsTarget, firstInstallmentId, {}))
+        .rejects.toThrow('patchRow needs at least one column');
+    });
+
+    it('traduz unique, foreign key e check em resultados distintos', async () => {
+      const { agreementId, secondInstallmentId, studentId, paymentId } = await seed();
+      const first = await pool.query<{ id: string }>(
+        'SELECT id FROM installments WHERE agreement_id = $1 AND installment_number = 1', [agreementId]);
+      const firstId = first.rows[0]?.id;
+      if (!firstId) throw new Error('seed failed');
+
+      // installment_number 2 ja existe neste acordo -> unique (agreement_id, installment_number)
+      expect(await patchRow(pool, installmentsTarget, firstId, { installment_number: 2 }))
+        .toEqual({ status: 'conflict' });
+      expect(secondInstallmentId).toBeTruthy();
+
+      // escola inexistente -> foreign key
+      expect(await patchRow(pool, { table: 'students', returning: 'id', softDelete: true }, studentId, { school_id: randomUUID() }))
+        .toEqual({ status: 'invalid_reference' });
+
+      // amount > 0 e CHECK de payments
+      expect(await patchRow(pool, { table: 'payments', returning: 'id', softDelete: false }, paymentId, { amount: -1 }))
+        .toEqual({ status: 'invalid_value' });
+    });
   });
 });

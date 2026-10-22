@@ -18,6 +18,8 @@ import {
 import { clearRefreshCookie, readCookie, serializeRefreshCookie } from './auth/cookies.js';
 import { hasPermission, type Permission } from './auth/roles.js';
 import { recordAudit } from './audit.js';
+import { patchRow } from './db/patch.js';
+import { patchSpecs, type PatchSpec } from './domain/patch-specs.js';
 
 const loginSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -174,6 +176,61 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
 
   const clearRefresh = (reply: FastifyReply): void => {
     reply.header('set-cookie', clearRefreshCookie(config.refreshCookie));
+  };
+
+  /**
+   * Answers one PATCH: the body must carry at least one known field, only the sent fields are
+   * written (plus `updated_at`) and the change is audited as `<entity>.updated` with the field names.
+   *
+   * `{}` is refused with `EMPTY_PATCH` after validation (the schema is partial, so zod accepts it)
+   * to turn an accidental no-op into a precise error. `null` clears a nullable column; sending `""`
+   * is rejected by the schema.
+   */
+  const runPatch = async (request: FastifyRequest, reply: FastifyReply, spec: PatchSpec): Promise<FastifyReply> => {
+    const { id } = request.params as { id?: string };
+    if (!id || !z.string().uuid().safeParse(id).success) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid id', correlationId: request.id });
+    }
+    const parsed = spec.schema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', message: `Invalid ${spec.entityType} data`, correlationId: request.id });
+    }
+    const changes = parsed.data;
+    const fields = Object.keys(changes);
+    if (fields.length === 0) {
+      return reply.code(400).send({ code: 'EMPTY_PATCH', message: 'At least one field must be provided', correlationId: request.id });
+    }
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+
+    const columns: Record<string, unknown> = {};
+    for (const field of fields) {
+      const column = spec.columns[field];
+      if (!column) throw new Error(`patch spec ${spec.entityType} has no column for ${field}`);
+      columns[column] = changes[field];
+    }
+
+    const outcome = await patchRow(pool, spec, id, columns);
+    if (outcome.status === 'not_found') {
+      return reply.code(404).send({ code: 'NOT_FOUND', message: `${spec.entityType} not found`, correlationId: request.id });
+    }
+    if (outcome.status === 'conflict') {
+      return reply.code(409).send({ code: 'CONFLICT', message: 'The change conflicts with an existing record', correlationId: request.id });
+    }
+    if (outcome.status === 'invalid_reference') {
+      return reply.code(400).send({ code: 'INVALID_REFERENCE', message: 'A referenced record does not exist', correlationId: request.id });
+    }
+    if (outcome.status === 'invalid_value') {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', message: `A value is not accepted by the ${spec.entityType} schema`, correlationId: request.id });
+    }
+
+    await recordAudit(pool, request.log, request.id, {
+      action: spec.auditAction,
+      actorId: actorIdOf(request),
+      entityType: spec.entityType,
+      entityId: id,
+      metadata: { fields }
+    });
+    return reply.code(200).send(outcome.row);
   };
 
   app.get('/health/live', async () => ({ status: 'ok', service: 'voa-financeiro-api' }));
@@ -381,7 +438,10 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
     const query = request.query as { installmentId?: string; status?: string; limit?: string };
     const limit = Math.min(Math.max(Number(query.limit ?? 100) || 100, 1), 200);
-    const result = await pool.query(`SELECT id, installment_id AS "installmentId", amount, retained_amount AS "retainedAmount", released_amount AS "releasedAmount", paid_at AS "paidAt", status, source, external_id AS "externalId", created_at AS "createdAt", updated_at AS "updatedAt"
+    const result = await pool.query(`SELECT id, installment_id AS "installmentId", amount, retained_amount AS "retainedAmount", released_amount AS "releasedAmount", paid_at AS "paidAt", status, source, external_id AS "externalId",
+        retention_status AS "retentionStatus", retention_percentage AS "retentionPercentage", retention_approved_at AS "retentionApprovedAt",
+        retention_scheduled_month AS "retentionScheduledMonth", retention_released_at AS "retentionReleasedAt",
+        created_at AS "createdAt", updated_at AS "updatedAt"
       FROM payments WHERE ($1::uuid IS NULL OR installment_id = $1::uuid) AND ($2 = '' OR status = $2)
       ORDER BY created_at DESC LIMIT $3`, [query.installmentId ?? null, query.status ?? '', limit]);
     return { items: result.rows, limit };
@@ -404,6 +464,31 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     });
     return reply.code(201).send(result.rows[0]);
   });
+
+  /**
+   * PATCH contracts: partial updates of the domain rows.
+   *
+   * Permission follows the same split as `POST` (`catalog:write` for the catalog, `finance:write`
+   * for the financial chain) and the body validation, the column allowlist and the returned
+   * projection all come from `patchSpecs`, so a new field is added in a single place.
+   */
+  app.patch('/api/v1/schools/:id', { preHandler: requirePermission('catalog:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.schools));
+
+  app.patch('/api/v1/customers/:id', { preHandler: requirePermission('catalog:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.customers));
+
+  app.patch('/api/v1/students/:id', { preHandler: requirePermission('catalog:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.students));
+
+  app.patch('/api/v1/agreements/:id', { preHandler: requirePermission('finance:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.agreements));
+
+  app.patch('/api/v1/installments/:id', { preHandler: requirePermission('finance:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.installments));
+
+  app.patch('/api/v1/payments/:id', { preHandler: requirePermission('finance:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.payments));
 
   app.get('/api/v1/schools/:schoolId/retention', { preHandler: requireAuthentication }, async (request, reply) => {
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
