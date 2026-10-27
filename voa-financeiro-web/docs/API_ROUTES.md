@@ -2,6 +2,8 @@
 
 Todas as rotas de dominio sao versionadas sob `/api/v1`. Observabilidade, identidade, RBAC e o schema de dominio ja estao implementados; os adaptadores externos (Asaas, ChatGuru, SMTP) continuam desligados ate existir configuracao homologada.
 
+O codigo da API separa as rotas por contexto, um arquivo por grupo: `routes/ops.ts` (saude e webhook), `routes/catalog.ts`, `routes/finance.ts`, `routes/migration.ts`, `routes/reconciliation.ts` e `routes/identity.ts` (sessao e auditoria). `app.ts` so compoe: registra os plugins de plataforma, monta o `RouteDeps` (pool + config + executor de `PATCH`) e chama um `register<Contexto>Routes` por modulo. O processo continua sendo um so - os modulos compartilham o mesmo pool e as mesmas transacoes, que e o que mantem a cadeia financeira consistente. As guardas de RBAC ficam em `http/guards.ts` e o contrato dos `PATCH`, em `http/patch-runner.ts`.
+
 ## Implementadas
 
 - `GET /health/live`, `GET /health/ready`, `GET /api/v1`
