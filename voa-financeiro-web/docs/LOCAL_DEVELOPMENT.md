@@ -106,3 +106,28 @@ npm --workspace apps/api run auth:create-admin
 O login devolve o access token e o cookie `voa_refresh`; a senha temporaria deve ser trocada assim que
 o operador tiver a tela de perfil.
 
+## Build da API, testes e dependencias
+
+`npm --workspace apps/api run build` usa `apps/api/tsconfig.build.json`, que herda o `tsconfig.json` e
+exclui `src/**/*.test.ts`: o `dist` gerado tem so o que a API executa. O `typecheck` continua no
+`tsconfig.json` e por isso confere os testes tambem — sao dois alvos de proposito, nao duplicacao.
+
+`apps/api/vitest.config.ts` fixa `include: ["src/**/*.test.ts"]`. O include existe porque o build
+compila `src` inteiro para `dist`: sem ele o Vitest tambem carrega `dist/**/*.test.js` e cada caso
+roda duas vezes, a segunda contra uma copia velha do teste.
+
+`npm audit` esta em **0 vulnerabilidades** (verificado em 2026-10-27). Tres majors recentes mudaram
+contrato e valem a lembranca:
+
+- `zod` 4 — os codigos de issue mudaram: formato de string e `invalid_format` (era `invalid_string`) e
+  valor fora do enum e `invalid_value` (era `invalid_enum_value`). Nenhum schema usava API removida:
+  `.strict()`, `.email()`, `.date()`, `.datetime()` e `.uuid()` seguem funcionando (agora como alias
+  deprecated). `apps/api/src/domain/migration-batches.test.ts` e o unico lugar que compara codigo de
+  issue.
+- `vitest` 5 — exige Node `^22.12 || ^24`, enquanto o `engines` da raiz continua `>=20` (intencional: a
+  API roda em Node 20, o runner de testes nao). Em Node 20 o `npm test` falha, entao o toolchain de
+  desenvolvimento precisa de 22.12+.
+- `fastify` 5.12.7 + `fast-jwt` corrigidos — vieram por `npm audit fix` dentro do semver, sem mudanca de
+  codigo; os 33 testes de integracao de auth/refresh cobrem o caminho.
+
+

@@ -69,10 +69,13 @@ describe('schemas das rotas de migracao', () => {
   });
 
   it('recusa hash que nao e sha256, contagem negativa e campo desconhecido', () => {
-    expect(codes({ sourceName: 'VOA.xlsx', sourceHash: 'abc' })).toEqual(['invalid_string']);
-    expect(codes({ sourceName: 'VOA.xlsx', sourceHash: hash.toUpperCase() })).toEqual(['invalid_string']);
+    // Codigos do zod v4: formato de string vira `invalid_format` (no v3 era `invalid_string`) e valor
+    // fora do enum vira `invalid_value` (no v3 era `invalid_enum_value`). Os testes seguem o codigo
+    // da biblioteca de proposito: e o que garante que a recusa vem da regra certa.
+    expect(codes({ sourceName: 'VOA.xlsx', sourceHash: 'abc' })).toEqual(['invalid_format']);
+    expect(codes({ sourceName: 'VOA.xlsx', sourceHash: hash.toUpperCase() })).toEqual(['invalid_format']);
     expect(codes({ sourceName: 'VOA.xlsx', sourceHash: hash, rowCount: -1 })).toEqual(['too_small']);
-    expect(codes({ sourceName: 'VOA.xlsx', sourceHash: hash, sourceKind: 'pdf' })).toEqual(['invalid_enum_value']);
+    expect(codes({ sourceName: 'VOA.xlsx', sourceHash: hash, sourceKind: 'pdf' })).toEqual(['invalid_value']);
     expect(codes({ sourceName: 'VOA.xlsx', sourceHash: hash, status: 'committed' })).toEqual(['unrecognized_keys']);
     expect(codes({ sourceHash: hash })).toEqual(['invalid_type']);
   });
