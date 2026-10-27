@@ -1,6 +1,6 @@
 # VOA Financeiro Web
 
-Novo monorepo TypeScript para a substituicao gradual do Canvas App. A API e o componente prioritario desta fundacao; o frontend React e apenas um shell inicial.
+Novo monorepo TypeScript para a substituicao gradual do Canvas App. A API e o componente prioritario desta fundacao; o frontend React e um shell enxuto: login e as telas de clientes, alunos, escolas e a fila de responsaveis (somente leitura).
 
 ## Execucao local
 
@@ -40,4 +40,4 @@ Fundacao entregue: autenticacao, RBAC, schema canonico, migracao do legado e os 
 
 Situacao em 2026-10-27: autenticacao com rotacao de refresh, RBAC por permissao, trilha em `audit_logs`, os contratos `PATCH` parciais (auditados como `<entidade>.updated`), as rotas de migracao (`/api/v1/migrations`: registro do lote, gate de `validate`/`commit` e triagem de achados, exclusivas do `admin`) e os testes de integracao com PostgreSQL descartavel (`npm run test:integration` com `TEST_DATABASE_URL`) estao implementados. A migracao do legado fechou o dicionario (`0 review`, `0 proposed`) e a carga canonica local rodou completa: `150.018` linhas em `10` entidades, com `agreements.reference` materializado. As rotas de leitura e escrita do dominio de aluno tambem entraram (`/api/v1/students/:studentId/guardians`, `/api/v1/students/:studentId/contacts`, `PATCH /api/v1/guardians/:id` e `PATCH /api/v1/student-contacts/:id`) e o `PATCH /api/v1/agreements/:id` passou a aceitar `closedAt`. Rotas e permissoes em `docs/API_ROUTES.md`.
 
-O que falta: reconciliar o pos-corte no banco local (3 linhas sem `legacy_source`, R$ 1.362,48 de divergencia acordo/parcela, 24 contatos atras do ensaio), a promocao responsavel -> cliente e os adaptadores Asaas, ChatGuru e SMTP usando segredos por ambiente. O Supabase saiu do caminho critico em 2026-10-27: o canonico oficial e o PostgreSQL local, e migrar para um Postgres gerenciado depois e so trocar `DATABASE_URL`/`DIRECT_DATABASE_URL`/`STAGING_DATABASE_URL`.
+O que falta: reconciliar o pos-corte no banco local (3 linhas sem `legacy_source`, R$ 1.362,48 de divergencia acordo/parcela, 24 contatos atras do ensaio), a acao de vincular responsavel -> cliente **na tela** (a fila ja e lida pela SPA e o `PATCH /api/v1/guardians/:id` ja grava; falta o botao que envia o par) e os adaptadores Asaas, ChatGuru e SMTP usando segredos por ambiente. O Supabase saiu do caminho critico em 2026-10-27: o canonico oficial e o PostgreSQL local, e migrar para um Postgres gerenciado depois e so trocar `DATABASE_URL`/`DIRECT_DATABASE_URL`/`STAGING_DATABASE_URL`.

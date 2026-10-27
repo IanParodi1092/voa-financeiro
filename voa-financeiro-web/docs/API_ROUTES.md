@@ -159,6 +159,11 @@ secao e o caminho assistido para uma pessoa decidir o vinculo, e nao uma regra q
   guardioes, com `status`, `limit` (teto 200) e `offset`;
 - `PATCH /api/v1/guardians/:id` com `customerId` (`catalog:write`) - grava o vinculo confirmado.
 
+A SPA ja consome a fila: o painel "Responsaveis" (`apps/web/src/main.tsx`) abre sem filtro (a ordenacao
+da API ja traz `single` primeiro), mostra `counts` em chips por situacao, a frase de `titles` em cada
+linha e os candidatos com o numero de acordos pagos. Ele e **somente leitura** de proposito: a tela
+encurta a decisao, mas quem grava o vinculo continua sendo o `PATCH` abaixo.
+
 O universo de candidatos **nao** e a tabela `customers`: e `agreements.customer_id` do aluno do
 guardiao. Dos 26.264 clientes, 24.696 vem de `TBL_CLIENTE` e sao escolas/empresas (CNPJ); os 1.568
 restantes sao o pagador sintetizado de `TBL_PAGAMENTO`. Comparar nome de pessoa com razao social so

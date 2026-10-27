@@ -16,10 +16,66 @@ const useStyles = makeStyles({
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' },
   metric: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', padding: '22px', background: '#f2f6f4', border: '1px solid #d8e4de' },
   customerSection: { marginTop: '32px', paddingTop: '28px', borderTop: '1px solid #d8e4de' },
-  list: { margin: '24px 0 0', padding: 0, listStyleType: 'none' }
+  list: { margin: '24px 0 0', padding: 0, listStyleType: 'none' },
+  chips: { display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '20px' },
+  linkHint: { margin: '6px 0 0', color: '#3d5a50', fontSize: '13px' },
+  linkItem: { display: 'grid', gap: '6px', padding: '16px 0', borderBottom: '1px solid #e3ece8' },
+  linkRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '16px' },
+  linkMeta: { margin: 0, color: '#3d5a50', fontSize: '13px' },
+  linkCandidates: { margin: 0, paddingLeft: '18px', color: '#123b50', fontSize: '13px' },
+  linkPager: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', marginTop: '20px', fontSize: '13px' }
 });
 
 type User = { sub?: string; name?: string; roles?: string[] };
+
+type GuardianLinkStatus = 'single' | 'ambiguous' | 'no_match' | 'no_payer' | 'linked';
+
+type GuardianLinkCandidate = {
+  customerId: string;
+  fullName: string;
+  legacyTable: string | null;
+  legacyId: string | null;
+  agreements: number;
+};
+
+type GuardianLinkItem = {
+  guardianId: string;
+  guardianName: string;
+  studentId: string;
+  studentName: string;
+  linkedCustomerId: string | null;
+  payers: number;
+  status: GuardianLinkStatus;
+  candidates: GuardianLinkCandidate[];
+};
+
+type GuardianLinkQueue = {
+  generatedAt: string;
+  status: GuardianLinkStatus | null;
+  limit: number;
+  offset: number;
+  titles: Record<GuardianLinkStatus, string>;
+  counts: Record<GuardianLinkStatus, number>;
+  items: GuardianLinkItem[];
+};
+
+/** Ordem dos chips: a mesma da fila (o que da para confirmar em um clique primeiro). */
+const GUARDIAN_LINK_ORDER: GuardianLinkStatus[] = ['single', 'ambiguous', 'no_match', 'no_payer', 'linked'];
+
+/**
+ * Rotulo curto do chip. A frase completa de cada situacao vem da API em `titles` e e usada na linha e
+ * no `title` do botao, para nao existirem duas versoes do texto de dominio no front.
+ */
+const GUARDIAN_LINK_SHORT: Record<GuardianLinkStatus, string> = {
+  single: 'Um pagador',
+  ambiguous: 'Ambiguo',
+  no_match: 'Outro nome',
+  no_payer: 'Sem pagador',
+  linked: 'Vinculado'
+};
+
+const GUARDIAN_LINK_PAGE = 25;
+
 
 function App() {
   const styles = useStyles();
@@ -40,6 +96,10 @@ function App() {
   const [showStudents, setShowStudents] = useState(false);
   const [newStudentName, setNewStudentName] = useState('');
   const [newStudentSchoolId, setNewStudentSchoolId] = useState('');
+  const [linkQueue, setLinkQueue] = useState<GuardianLinkQueue | null>(null);
+  const [linkStatus, setLinkStatus] = useState<GuardianLinkStatus | ''>('');
+  const [showLinks, setShowLinks] = useState(false);
+  const [linkLoading, setLinkLoading] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -133,9 +193,109 @@ function App() {
     setNewStudentName(''); await loadStudents();
   }
 
+  async function loadGuardianLinks(status: GuardianLinkStatus | '' = linkStatus, offset = 0) {
+    if (!token) return;
+    setError('');
+    setLinkLoading(true);
+    try {
+      const query = new URLSearchParams({ limit: String(GUARDIAN_LINK_PAGE), offset: String(offset) });
+      if (status) query.set('status', status);
+      const response = await fetch(`${API_URL}/api/v1/guardians/customer-candidates?${query}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) { setError('Não foi possível carregar a fila de responsáveis.'); return; }
+      setLinkQueue(await response.json());
+      setLinkStatus(status);
+      setShowLinks(true);
+    } finally {
+      setLinkLoading(false);
+    }
+  }
+
   if (token && !user) return <main className={styles.page}><Spinner label="Validando sessão" /></main>;
   if (!user) return <main className={styles.page}><section className={styles.panel}><div className={styles.brand}><Subtitle1>VOA FINANCEIRO</Subtitle1><Title1>Acesso administrativo</Title1></div><form className={styles.form} onSubmit={login}>{error && <MessageBar intent="error">{error}</MessageBar>}<Field label="E-mail" required><Input type="email" value={email} onChange={(_, data) => setEmail(data.value)} /></Field><Field label="Senha" required><Input type="password" value={password} onChange={(_, data) => setPassword(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit" disabled={loading}>{loading ? 'Entrando...' : 'Entrar'}</Button></div></form></section></main>;
-  return <main className={styles.page}><section className={styles.dashboard}><header className={styles.header}><div className={styles.brand}><Subtitle1>PAINEL OPERACIONAL</Subtitle1><Title1>Olá, {user.name ?? 'administrador'}</Title1></div><Button appearance="secondary" onClick={logout}>Sair</Button></header>{error && <MessageBar intent="error">{error}</MessageBar>}<div className={styles.grid}><Button className={styles.metric} appearance="subtle" onClick={loadCustomers}><Subtitle1>Clientes</Subtitle1><p>Cadastro e contatos</p></Button><Button className={styles.metric} appearance="subtle" onClick={loadStudents}><Subtitle1>Alunos</Subtitle1><p>Escolas e responsáveis</p></Button><div className={styles.metric}><Subtitle1>Cobranças</Subtitle1><p>Boletos e pagamentos</p></div><Button className={styles.metric} appearance="subtle" onClick={loadSchools}><Subtitle1>Escolas</Subtitle1><p>Alunos e acordos</p></Button></div>{showCustomers && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Clientes cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowCustomers(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createCustomer}><Field label="Nome completo" required><Input value={newCustomerName} onChange={(_, data) => setNewCustomerName(data.value)} /></Field><Field label="E-mail"><Input type="email" value={newCustomerEmail} onChange={(_, data) => setNewCustomerEmail(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar cliente</Button></div></form><ul className={styles.list}>{customers.map((customer) => <li key={customer.id}><strong>{customer.fullName}</strong><span>{customer.email ?? 'Sem e-mail'}</span></li>)}</ul></section>}{showStudents && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Alunos cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowStudents(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createStudent}><Field label="Nome do aluno" required><Input value={newStudentName} onChange={(_, data) => setNewStudentName(data.value)} /></Field><Field label="Escola" required><select className="school-select" value={newStudentSchoolId} onChange={(event) => setNewStudentSchoolId(event.target.value)}><option value="">Selecione uma escola</option>{schools.map((school) => <option key={school.id} value={school.id}>{school.tradeName ?? school.legalName}</option>)}</select></Field><div className={styles.actions}><Button appearance="primary" type="submit" disabled={!newStudentSchoolId}>Cadastrar aluno</Button></div></form><ul className={styles.list}>{students.map((student) => <li key={student.id}><strong>{student.fullName}</strong><span>{schools.find((school) => school.id === student.schoolId)?.legalName ?? 'Escola'}</span></li>)}</ul></section>}{showSchools && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Escolas cadastradas</Subtitle1><Button appearance="secondary" onClick={() => setShowSchools(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createSchool}><Field label="Razão social" required><Input value={newSchoolName} onChange={(_, data) => setNewSchoolName(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar escola</Button></div></form><ul className={styles.list}>{schools.map((school) => <li key={school.id}><strong>{school.tradeName ?? school.legalName}</strong><span>{school.legalName}</span></li>)}</ul></section>}</section></main>;
+  return <main className={styles.page}><section className={styles.dashboard}><header className={styles.header}><div className={styles.brand}><Subtitle1>PAINEL OPERACIONAL</Subtitle1><Title1>Olá, {user.name ?? 'administrador'}</Title1></div><Button appearance="secondary" onClick={logout}>Sair</Button></header>{error && <MessageBar intent="error">{error}</MessageBar>}<div className={styles.grid}><Button className={styles.metric} appearance="subtle" onClick={loadCustomers}><Subtitle1>Clientes</Subtitle1><p>Cadastro e contatos</p></Button><Button className={styles.metric} appearance="subtle" onClick={loadStudents}><Subtitle1>Alunos</Subtitle1><p>Escolas e responsáveis</p></Button><div className={styles.metric}><Subtitle1>Cobranças</Subtitle1><p>Boletos e pagamentos</p></div><Button className={styles.metric} appearance="subtle" onClick={loadSchools}><Subtitle1>Escolas</Subtitle1><p>Alunos e acordos</p></Button><Button className={styles.metric} appearance="subtle" onClick={() => loadGuardianLinks('', 0)}><Subtitle1>Responsáveis</Subtitle1><p>Vínculo com clientes</p></Button></div>{showLinks && linkQueue && <GuardianLinkPanel queue={linkQueue} loading={linkLoading} status={linkStatus} onFilter={(next) => loadGuardianLinks(next, 0)} onPage={(offset) => loadGuardianLinks(linkStatus, offset)} onClose={() => setShowLinks(false)} />}{showCustomers && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Clientes cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowCustomers(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createCustomer}><Field label="Nome completo" required><Input value={newCustomerName} onChange={(_, data) => setNewCustomerName(data.value)} /></Field><Field label="E-mail"><Input type="email" value={newCustomerEmail} onChange={(_, data) => setNewCustomerEmail(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar cliente</Button></div></form><ul className={styles.list}>{customers.map((customer) => <li key={customer.id}><strong>{customer.fullName}</strong><span>{customer.email ?? 'Sem e-mail'}</span></li>)}</ul></section>}{showStudents && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Alunos cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowStudents(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createStudent}><Field label="Nome do aluno" required><Input value={newStudentName} onChange={(_, data) => setNewStudentName(data.value)} /></Field><Field label="Escola" required><select className="school-select" value={newStudentSchoolId} onChange={(event) => setNewStudentSchoolId(event.target.value)}><option value="">Selecione uma escola</option>{schools.map((school) => <option key={school.id} value={school.id}>{school.tradeName ?? school.legalName}</option>)}</select></Field><div className={styles.actions}><Button appearance="primary" type="submit" disabled={!newStudentSchoolId}>Cadastrar aluno</Button></div></form><ul className={styles.list}>{students.map((student) => <li key={student.id}><strong>{student.fullName}</strong><span>{schools.find((school) => school.id === student.schoolId)?.legalName ?? 'Escola'}</span></li>)}</ul></section>}{showSchools && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Escolas cadastradas</Subtitle1><Button appearance="secondary" onClick={() => setShowSchools(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createSchool}><Field label="Razão social" required><Input value={newSchoolName} onChange={(_, data) => setNewSchoolName(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar escola</Button></div></form><ul className={styles.list}>{schools.map((school) => <li key={school.id}><strong>{school.tradeName ?? school.legalName}</strong><span>{school.legalName}</span></li>)}</ul></section>}</section></main>;
+}
+
+type GuardianLinkPanelProps = {
+  queue: GuardianLinkQueue;
+  loading: boolean;
+  status: GuardianLinkStatus | '';
+  onFilter: (status: GuardianLinkStatus | '') => void;
+  onPage: (offset: number) => void;
+  onClose: () => void;
+};
+
+/**
+ * Fila de promocao responsavel -> cliente (`GET /api/v1/guardians/customer-candidates`).
+ *
+ * Somente leitura de proposito: o vinculo continua sendo decisao humana, porque o `PATCH
+ * /guardians/:id` que grava `customerId` recusa cliente que nao paga acordo do aluno
+ * (`customer_not_payer`). A tela encurta a decisao, nao a substitui.
+ */
+function GuardianLinkPanel({ queue, loading, status, onFilter, onPage, onClose }: GuardianLinkPanelProps) {
+  const styles = useStyles();
+  const total = GUARDIAN_LINK_ORDER.reduce((sum, value) => sum + queue.counts[value], 0);
+  const last = queue.offset + queue.items.length;
+  return (
+    <section className={styles.customerSection}>
+      <div className={styles.header}>
+        <Subtitle1>Responsáveis e clientes</Subtitle1>
+        <Button appearance="secondary" onClick={onClose}>Fechar</Button>
+      </div>
+      <p className={styles.linkHint}>
+        Cada linha é um responsável e os pagadores dos acordos do aluno dele. Nome igual é indício, não vínculo:
+        a promoção a cliente continua sendo uma decisão do operador.
+      </p>
+      <div className={styles.chips}>
+        <Button size="small" appearance={status === '' ? 'primary' : 'secondary'} onClick={() => onFilter('')}>
+          Todas ({total})
+        </Button>
+        {GUARDIAN_LINK_ORDER.map((value) => (
+          <Button
+            key={value}
+            size="small"
+            appearance={status === value ? 'primary' : 'secondary'}
+            title={queue.titles[value]}
+            onClick={() => onFilter(value)}
+          >
+            {GUARDIAN_LINK_SHORT[value]} ({queue.counts[value]})
+          </Button>
+        ))}
+      </div>
+      {loading && <Spinner label="Carregando responsáveis" />}
+      {!loading && queue.items.length === 0 && <p className={styles.linkHint}>Nenhum responsável nesta situação.</p>}
+      <ul className={styles.list}>
+        {queue.items.map((item) => (
+          <li key={item.guardianId} className={styles.linkItem}>
+            <div className={styles.linkRow}>
+              <strong>{item.guardianName}</strong>
+              <span>{item.studentName}</span>
+            </div>
+            <p className={styles.linkMeta}>
+              {queue.titles[item.status]} · {item.payers === 1 ? '1 pagador' : `${item.payers} pagadores`} nos acordos
+            </p>
+            {item.linkedCustomerId && <p className={styles.linkMeta}>Já vinculado ao cliente {item.linkedCustomerId}</p>}
+            {item.candidates.length > 0 && (
+              <ul className={styles.linkCandidates}>
+                {item.candidates.map((candidate) => (
+                  <li key={candidate.customerId}>
+                    {candidate.fullName} — {candidate.agreements === 1 ? '1 acordo pago' : `${candidate.agreements} acordos pagos`}
+                    {candidate.legacyId ? ` · legado ${candidate.legacyTable} #${candidate.legacyId}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+      {queue.items.length > 0 && (
+        <div className={styles.linkPager}>
+          <Button size="small" appearance="secondary" disabled={queue.offset === 0 || loading} onClick={() => onPage(Math.max(0, queue.offset - queue.limit))}>Anteriores</Button>
+          <span>{queue.offset + 1}–{last} de {total}</span>
+          <Button size="small" appearance="secondary" disabled={queue.items.length < queue.limit || loading} onClick={() => onPage(queue.offset + queue.limit)}>Próximos</Button>
+        </div>
+      )}
+    </section>
+  );
 }
 
 createRoot(document.getElementById('root')!).render(<FluentProvider theme={webLightTheme}><App /></FluentProvider>);
