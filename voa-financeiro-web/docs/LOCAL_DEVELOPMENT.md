@@ -2,7 +2,7 @@
 
 O backend exige `DATABASE_URL` apenas para o readiness check e para o runner de migrations. O endpoint `GET /health/live` nao depende do banco; `GET /health/ready` testa a conectividade sem expor detalhes.
 
-Use somente banco local ou projeto Supabase de desenvolvimento. Nunca coloque `.env` no controle de versao. As integrações externas permanecem desativadas até existir configuração e testes de homologação.
+Use somente banco local (PostgreSQL). Projeto Supabase **nao** faz parte do caminho atual: decisao de 2026-10-27 removeu-o do escopo imediato. Nunca coloque `.env` no controle de versao — o modelo versionado e `.env.example`. As integrações externas permanecem desativadas até existir configuração e testes de homologação.
 
 ## Scripts Python de migracao
 
@@ -45,9 +45,9 @@ Diagnostico completo em `docs/MIGRATION_WORKFLOW.md` ("Investigacao de encoding 
 
 ## Banco local para a API e para os testes de integracao
 
-Com o Supabase de desenvolvimento em somente-leitura (cota de disco) e a carga canonica da revisao
-de 546.346 linhas ja commitada no Postgres local, o caminho de desenvolvimento passa a ser o
-container local:
+O **PostgreSQL local e o alvo do projeto** (decisao de 2026-10-27: o Supabase sai do
+caminho critico). A carga canonica da revisao de 546.346 linhas ja esta commitada nesse
+banco, e e nele que a API, as migrations, a carga e os testes de integracao rodam:
 
 ```powershell
 # a API le o canonico local e o staging continua na mesma instancia
@@ -56,21 +56,31 @@ npm run db:migrate      # aplica 0007_auth_refresh_tokens.sql (login com refresh
 npm run dev:api
 ```
 
-O `.env` do repositorio ja aponta `DATABASE_URL` e `DIRECT_DATABASE_URL` para esse container e guarda
-o endereco antigo do Supabase comentado logo acima das duas linhas: enquanto o Supabase estiver em
-somente-leitura, a API, as migrations e os scripts de carga falam com o canonico local sem nenhum
-override de shell (o `load_canonical_batch.py`, alias, le o canonico sempre de
-`DIRECT_DATABASE_URL`/`DATABASE_URL`, entao nao ha flag para troca-lo). Para voltar ao Supabase,
-descomente as duas linhas comentadas e comente as locais.
+O `.env` do repositorio aponta `DATABASE_URL`, `DIRECT_DATABASE_URL` e
+`STAGING_DATABASE_URL` para esse container, e as variaveis `SUPABASE_*` que sobraram no
+arquivo sao **ignoradas**: o schema de configuracao (`apps/api/src/config.ts`) nao as
+conhece e o zod descarta chaves desconhecidas. Nao ha flag para trocar de banco em tempo
+de execucao — `load_canonical_batch.py` e companhia leem sempre `DIRECT_DATABASE_URL`/
+`DATABASE_URL`. O modelo de `.env` versionado e o `.env.example` desta pasta.
+
+Para apontar para outro Postgres (outra maquina, outro container), basta trocar as tres
+URLs — nada no codigo e especifico de um provedor. Um Postgres gerenciado (Supabase,
+Neon, RDS) funciona como destino futuro, mas nao faz parte do escopo atual.
 
 Os testes de integracao de auth/RBAC usam **PostgreSQL descartavel**: as migrations rodam num schema
 temporario (`search_path`) que e removido no fim, entao o banco escolhido nao e alterado.
 
 ```powershell
-docker exec voa-staging createdb -U postgres voa_api_test
+# uma vez por maquina: crie o banco descartavel (o nome precisa ser diferente do canonico)
+createdb -h localhost -p 5434 -U postgres voa_api_test          # ou: CREATE DATABASE voa_api_test;
 $env:TEST_DATABASE_URL = "postgresql://postgres:SENHA@localhost:5434/voa_api_test"
 npm run test:integration
+# ao terminar, remova para nao deixar lixo: DROP DATABASE voa_api_test;
 ```
+
+Se o Postgres estiver em container, o mesmo passo e `docker exec <container> createdb -U postgres
+voa_api_test`. Sem o banco criado, o bloco de integracao falha na conexao (nao e pulado: o skip
+depende apenas de `TEST_DATABASE_URL` estar definida).
 
 Sem `TEST_DATABASE_URL` o bloco inteiro e ignorado, entao `npm test` permanece verde em maquina sem
 banco. Os testes cobrem login (sucesso e falha auditada), cookie `voa_refresh` httpOnly,

@@ -242,7 +242,7 @@ O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exi
    - `npm run db:field-dictionary` -> `50 map / 79 ignore / 725 defer / 2 review`, `0` problema estrutural; `npm run db:field-dictionary-check` -> exit `2` com **2 `REVIEW_REQUIRED`** e nenhum `MAPPING_NOT_CONFIRMED`;
    - `npm run test:python` -> `215` testes (as assercoes de `proposed` viraram assercoes de `confirmed`, mais um teste que exige zero `MAPPING_NOT_CONFIRMED` no portao);
    - rodada padrao, **sem nenhuma flag** (`python scripts\load_canonical_batch.py --commit`): `considered=176.205`, `loaded=150.018`, `inserted=0`, `reused=150.018`, exit `4` so pelo `asaas_charges`;
-   - `agreements.reference` continua `NULL` nas 1.505 linhas locais porque elas sao reusadas pela chave legada: o valor entra na insercao (banco novo, como o Supabase) ou numa rodada com `--commit --enrich-reused`.
+   - `agreements.reference` continua `NULL` nas 1.505 linhas locais porque elas sao reusadas pela chave legada: o valor entra na insercao (banco novo, sem reuso) ou numa rodada com `--commit --enrich-reused`.
 
 Ordem obrigatoria para qualquer ambiente novo: `db:migrate` (0009, 0010 e 0011) -> `db:backfill-legacy-provenance --commit` -> carga. Habilitar o provedor antes do backfill faz a carga recusar as linhas existentes como duplicidade.
 

@@ -541,6 +541,10 @@ Estado apurado depois do incidente (tudo somente leitura, nada foi apagado):
 
 Caminhos para destravar (decisao do operador):
 
+> **Decisao de 2026-10-27: o Supabase sai do caminho critico.** O canonico oficial passa a ser o
+> PostgreSQL local e nenhum passo do projeto depende de liberar disco naquele projeto. O que esta
+> abaixo fica registrado como procedimento de referencia caso se volte a usar um Postgres gerenciado.
+
 1. **liberar disco no projeto Supabase** (dashboard, Compute/Disk ou upgrade de plano) - e o unico
    caminho sem mudanca de codigo;
 2. com escrita liberada: `VACUUM (FULL, ANALYZE) migration_rows`, que devolve o espaco das tuplas
@@ -708,7 +712,7 @@ linhas e os 24 contatos) antes do cutover - a decisao e do operador.
 - `users`: entrada exige politica de credencial (`TBL_USER` nao tem coluna mapeada);
 - `students.customer_id`: `TBL_ALUNO` nao tem vinculo com o cliente; os 6.641 alunos ficam sem `customer_id` ate essa decisao;
 - as 2 linhas de teste sem `legacy_source` (`schools` = 1, `customers` = 1) ja nao existem no banco local: medicao de 2026-10-27 deu `0` linhas sem proveniencia em `schools`, `customers`, `agreements` e `users` (`schools` 75, `customers` 26.264). Elas seguem no Supabase, onde sao 3 linhas (ver a ultima entrada desta lista).
-- canonico do Supabase: segue em somente-leitura por cota de disco e, quando for liberado, precisa receber a revisao (hoje tem 3 linhas sem `legacy_source` e a divergencia de R$ 1.362,48 entre `agreements.total_amount` e `installments.original_amount`, alem de estar 24 contatos atras do ensaio local).
+- canonico do Supabase: **fora do escopo desde 2026-10-27** (o alvo passou a ser o Postgres local). Se um dia voltar, ele precisa receber a revisao, porque hoje tem 3 linhas sem `legacy_source`, a divergencia de R$ 1.362,48 entre `agreements.total_amount` e `installments.original_amount` e esta 24 contatos atras do ensaio local.
 
 ## Entrada de uma aba/arquivo financeiro novo (boletos, payables, cobranca)
 

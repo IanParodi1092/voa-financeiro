@@ -37,4 +37,5 @@ Comece por `voa-financeiro-web/README.md`. Para a migracao, a ordem de leitura e
 - Dicionario de campos fechado: `46 map` / `79 ignore` / `731 defer`, `0 review`, `0 proposed`; o portao `npm run db:field-dictionary-check` sai em `exit 0`.
 - Carga canonica local completa: `150.018` linhas em `10` entidades, `agreements.reference` materializado em `1.504` das `1.505` linhas.
 - Backend com autenticacao/RBAC, `audit_logs`, contratos `PATCH` por entidade e leitura/escrita de responsaveis e contatos do aluno.
-- Pendente: aplicar `0009`/`0010`/`0011` e a carga no Supabase (somente-leitura por cota de disco), reconciliacao pos-corte e os adaptadores Asaas/ChatGuru/SMTP.
+- **Banco: PostgreSQL local e o alvo do projeto** (decisao de 2026-10-27). O Supabase saiu do caminho critico e nenhuma etapa depende dele; trocar para um Postgres gerenciado no futuro e so apontar `DATABASE_URL`/`DIRECT_DATABASE_URL`/`STAGING_DATABASE_URL`.
+- Pendente: reconciliacao pos-corte (3 linhas sem `legacy_source`, R$ 1.362,48 de divergencia acordo/parcela, 24 contatos atras do ensaio), promocao responsavel -> cliente e os adaptadores Asaas/ChatGuru/SMTP.
