@@ -9,11 +9,11 @@
 - O lote completo `VOA.xlsx` da revisao anterior (419.700 linhas em 39 abas) esta em staging no Supabase e ja passou por validacao. A revisao de 2026-09-25 20:01 (`VOA.xlsx`, **60 abas e 546.346 linhas**) **esta estagiada e validada no Postgres local** (lote `4609c071-03c3-47fb-beff-5c3bcad6367e`), com o dicionario conferido (`0` divergencia de coluna e `1` aba vazia) e a carga canonica (fase 7) **executada e commitada no Postgres local** (104.709 linhas, lote marcado `committed`); o ensaio revelou e corrigiu um erro de ordenacao das abas que descartava 24 contatos - ver "Carga canonica local da revisao de 20:01". O mesmo commit no Supabase segue pendente porque ele entrou em somente-leitura por cota de disco - ver "Incidente de disco no staging" e "Staging local + canonico no Supabase".
 - A validacao registra achados por aba/campo, marca linhas com erro e atualiza `reconciliation_reports`.
 - O relatorio consolidado da ultima validacao esta em `docs/STAGING_VALIDATION_REPORT.md`.
-- O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 39 `map`, 78 `ignore`, 734 `defer` e 5 `review`.
+- O dicionario da fase 2 esta em `scripts/legacy_field_map.json` (60 abas, 856 colunas, 0 sem decisao): 50 `map`, 79 `ignore`, 725 `defer` e 2 `review`.
 - A comparacao entre o Canvas App legado e as planilhas esta em `docs/LEGACY_APP_SOURCE_GAPS.md`, gerada por `scripts/audit_legacy_app_sources.py` (`npm run db:audit-app-sources`): 2 tabelas lidas pela app nao tem aba (`TBL_CONSULTA` e `TBL_EMAILISTACONTATO`, deixadas fora de proposito), 2 campos de negocio faltam nas abas que existem (`CONTA_NOME`, `EMPRESA_ID`), 3 tabelas tem o conteudo em aba irma (`_FINANCEIRO`) e 5 fontes fora do Dataverse (conectores e Excel Online) nunca estiveram no workbook.
 - O relatorio do dicionario esta em `docs/FIELD_MAPPING_DICTIONARY.md`, gerado por `scripts/build_field_dictionary.py`.
-- A triagem das colunas `review` esta em `docs/FIELD_MAPPING_TRIAGE.md`: o que cada uma e no dado do lote, a decisao por classe (sem destino canonico, decisao ja tomada em 2026-09-25, politica de identidade, schema faltando, endereco de escola) e o impacto de cada aceite no portao. Em 2026-10-22 o operador aceitou as classes A, B, E e A': **23 colunas sairam de `review`**, a classe D foi aprovada de forma estreita (migration `0009` so com `contacts.legacy_id` e `installments.legacy_id`) e a classe A' entrou como `status: "proposed"`.
-- A carga canonica (fase 7) esta em `scripts/load_canonical_batch.py`, com dry-run por padrao. Em 2026-09-25 ela carregou 78.217 linhas de `schools`, `customers`, `contacts` e `students` e, na mesma data, a cadeia financeira (`agreements`, `installments`, `payments`, `asaas_customers` e o cliente pagador sintetizado) com `agreements.total_amount` fechando exatamente com a soma de `installments.original_amount`; o relatorio da ultima rodada esta em `docs/CANONICAL_LOAD_REPORT.md`. Os 22 mapeamentos `proposed` de entao foram confirmados pelo operador em 2026-09-25; desde 2026-10-22 existe **um** `proposed` novo (`Pagamento_Nome -> agreements.reference`), entao a carga precisa de `--allow-proposed agreements` (sem a flag `agreements` fica bloqueado por `mapping_not_confirmed` e `installments`/`payments` caem por dependencia) ate esse mapeamento virar `confirmed`.
+- A triagem das colunas `review` esta em `docs/FIELD_MAPPING_TRIAGE.md`: o que cada uma e no dado do lote, a decisao por classe (sem destino canonico, decisao ja tomada em 2026-09-25, politica de identidade, schema faltando, endereco de escola) e o impacto de cada aceite no portao. Em 2026-10-22 o operador aceitou as classes A, B, E e A': **23 colunas sairam de `review`**, a classe D foi aprovada de forma estreita (migration `0009` so com `contacts.legacy_id` e `installments.legacy_id`) e a classe A' entrou como `status: "proposed"`. Em 2026-10-27 a `0010` fechou o schema da classe D e a `0011` reabriu a classe C com a entidade `guardians`, alem de mapear `TBL_ENDTEL` -> `student_contacts`: restam **2** colunas em `review` (`Pagamento_DataFechamento` e `TBL_USER.ID`).
+- A carga canonica (fase 7) esta em `scripts/load_canonical_batch.py`, com dry-run por padrao. Em 2026-09-25 ela carregou 78.217 linhas de `schools`, `customers`, `contacts` e `students` e, na mesma data, a cadeia financeira (`agreements`, `installments`, `payments`, `asaas_customers` e o cliente pagador sintetizado) com `agreements.total_amount` fechando exatamente com a soma de `installments.original_amount`; o relatorio da ultima rodada esta em `docs/CANONICAL_LOAD_REPORT.md`. Os 22 mapeamentos `proposed` de entao foram confirmados pelo operador em 2026-09-25; desde 2026-10-22 existe **um** `proposed` novo (`Pagamento_Nome -> agreements.reference`) e desde 2026-10-27 mais **dez** (`guardians` e `student_contacts`, abertos pela `0011`), entao a carga completa precisa de `--allow-proposed agreements,guardians,student_contacts` (sem as flags `agreements` fica bloqueado por `mapping_not_confirmed` e `installments`/`payments` caem por dependencia; `guardians` e `student_contacts` simplesmente nao carregam) ate esses mapeamentos virarem `confirmed`.
 - O profiler esta em `scripts/profile_legacy_workbook.py`.
 - O importador de staging esta em `scripts/stage_legacy_workbook.py`.
 - O validador de staging esta em `scripts/validate_staging_batch.py`.
@@ -431,6 +431,45 @@ aplicacao do zero num banco vazio (`voa_migtest`: os `10` arquivos em ordem, sem
 descartado depois), suite Python com `205` testes e dicionario em `39 map`, `78 ignore`,
 `734 defer`, `5 review`, `0` problema estrutural e `0` divergencia de staging.
 
+### Aplicado na migration 0011 (2026-10-27)
+
+A `0011_guardians_and_student_contact_status.sql` faz o que a `0010` deixou para depois: cria a
+entidade `guardians` (condicao de reabertura da classe C) e habilita a carga de `TBL_ENDTEL`.
+
+| Origem | Linhas | Objeto criado | Por que |
+|---|---:|---|---|
+| `TBL_ALUNO` (`Aluno.Responsavel_Financeiro`, `Aluno.CPFResponsavel`, `Aluno_RGResponsavel`, `Aluno_ResponsavelEstadoCivil`, `Aluno_ResponsavelProfissao`) | 6.350 com nome, 6.651 com CPF, 621/585/585 com os demais | tabela `guardians` (filha de `students`, `customer_id` nullable, `is_financial`/`is_verified`, proveniencia legada) | o responsavel nao e cliente pagador; sem entidade propria ele so poderia virar `customers`, o que a classe C proibiu |
+| `TBL_ENDTEL.ENDTEL_STATUS` | 35.578 ATIVADO / 5.996 DESATIVADO | `student_contacts.status text NOT NULL DEFAULT 'active'` | a `0010` nao tinha onde guardar o status: sem a coluna, os inativos seriam descartados ou carregados como ativos |
+
+Quatro pontos de operacao:
+
+1. A `0011` **nao muda a carga padrao**. `guardians` e `student_contacts` entram como
+   `status: "proposed"`, entao sem as flags novas as duas ficam `blocked: mapping_not_confirmed` e a
+   rodada `--allow-proposed agreements` segue `considered=121.991`, `loaded=104.709`, `inserted=0`,
+   `exit 4` (`asaas_charges`); sem nenhuma flag sao `89.349` avaliadas / `80.929` carregadas, porque
+   `agreements` bloqueado derruba `installments` e `payments`. A rodada completa passou a ser
+   `--allow-proposed agreements,guardians,student_contacts` (`176.205` avaliadas / `150.018`
+   carregadas).
+2. A chave legada do guardiao e a da **linha do aluno** (`legacy_id = TBL_ALUNO.ID`,
+   `legacy_table = TBL_ALUNO`), porque o legado nao tem id de responsavel. E o mesmo criterio de
+   `TBL_PAGAMENTO`, onde o `ID` identifica `agreements` e o cliente sintetizado: duas entidades, uma
+   linha de origem. `guardians.student_id` entra por `links: row:students`, nunca por nome.
+3. `student_contacts.type` ficou **sem** default sintetico. O cruzamento medido em `TBL_ENDTEL` e
+   conclusivo: 41.117 linhas tem tipo e valor, 457 tem tipo com valor vazio e 5.988 estao vazias nas
+   duas colunas e no status - as 5.988 "sem tipo" nao tem dado nenhum, entao um rotulo `unknown` so
+   gravaria linha vazia. Na contabilidade da rodada as 8.600 linhas descartadas sao 2.798 com aluno
+   fora da carga, 5.389 sem tipo e 413 sem valor.
+4. O rotulo `ENDTEL_TIPO` foi auditado antes de virar `type`: 252 e-mails com `@` estao rotulados
+   como `ENDERECO`/`TELEFONE` (0,6%), 13 `EMAIL` nao tem `@`, 5 `TELEFONE` tem letra e 1 tem virgula.
+   O rotulo entra como veio; a correcao pertence a revisao assistida, nao ao schema.
+
+Validacao: `Applied migration 0011_guardians_and_student_contact_status.sql` no banco existente
+(segunda rodada sem nada a aplicar), colunas/FK/indices conferidos no `information_schema` e
+`pg_indexes`, aplicacao do zero num banco vazio (os `11` arquivos em ordem, sem erro), suite Python
+com `214` testes e dicionario em `50 map`, `79 ignore`, `725 defer`, `2 review`, `0` problema
+estrutural e `0` divergencia de staging. Carga medida com as flags: `6.347` guardioes e `38.962`
+contatos de aluno; segunda rodada `inserted=0`, `reused=150.018`.
+
 ### Decisao de `billing_type` e `environment` das cobrancas
 
 - `asaas_customers.environment` e `asaas_charges.environment` ficam em `production` (decisao do
@@ -647,6 +686,7 @@ linhas e os 24 contatos) antes do cutover - a decisao e do operador.
 ## Pendencias de entrada ainda abertas
 
 - `asaas_charges`: sem `asaas_customer_id`, `environment`, `billing_type`, `due_date`, `status` e `value` (o status de boleto do legado nao tem mapa decidido);
+- `guardians` e `student_contacts`: carregados em 2026-10-27 com `--allow-proposed` (6.347 e 38.962 linhas), mas o portao ainda os lista como `MAPPING_NOT_CONFIRMED` - falta a aprovacao do operador para tirar o `proposed` do dicionario e da flag;
 - `users`: entrada exige politica de credencial (`TBL_USER` nao tem coluna mapeada);
 - `students.customer_id`: `TBL_ALUNO` nao tem vinculo com o cliente; os 6.641 alunos ficam sem `customer_id` ate essa decisao;
 - as 2 linhas de teste sem `legacy_source` (`schools` = 1, `customers` = 1) continuam no banco e poluem a reconciliacao (`schools` 76 no canonico para 75 linhas legadas).

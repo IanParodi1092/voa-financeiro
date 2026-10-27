@@ -1302,6 +1302,34 @@ class RealDictionaryTests(unittest.TestCase):
             self.assertEqual(self.without_flag[table].blocked_reason, "dependency_not_loaded", table)
         self.assertEqual(self.without_flag["customers"].status, "ready")
 
+    def test_class_c_and_d_tables_wait_for_their_own_flag(self) -> None:
+        """`guardians` (0011) e `student_contacts` (0010) entram como `proposed`.
+
+        Sem a flag a carga continua exatamente como antes das duas tabelas existirem; com
+        `--allow-proposed guardians,student_contacts` cada uma fica pronta e o guardiao aponta
+        para o aluno da propria linha (`links: row:students`).
+        """
+        for table in ("guardians", "student_contacts"):
+            self.assertEqual(self.without_flag[table].status, "blocked", table)
+            self.assertEqual(
+                self.without_flag[table].blocked_reason, "mapping_not_confirmed", table
+            )
+        approved = build_plan(
+            self.dictionary,
+            self.schema,
+            None,
+            {"agreements", "guardians", "student_contacts"},
+        )["tables"]
+        self.assertEqual(approved["student_contacts"].status, "ready")
+        self.assertEqual(approved["student_contacts"].missing_required, [])
+        self.assertEqual(approved["guardians"].status, "ready")
+        self.assertEqual(approved["guardians"].missing_required, [])
+        self.assertEqual(approved["guardians"].links, {"student_id": "students"})
+        self.assertEqual(
+            approved["student_contacts"].proposed_columns,
+            ["is_primary", "status", "student_id", "type", "value"],
+        )
+
     def test_the_synthesised_customer_keeps_one_row_per_agreement(self) -> None:
         rules = self.dictionary["sheets"]["TBL_PAGAMENTO"]["columns"]
         providers = [rule for rule in rules if rule.get("provides_legacy_id_for")]

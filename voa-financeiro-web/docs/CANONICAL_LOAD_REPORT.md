@@ -5,21 +5,21 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 
 | Metrica | Valor |
 |---|---:|
-| Modo | dry-run |
+| Modo | commit |
 | Lote | `4609c071-03c3-47fb-beff-5c3bcad6367e` (VOA.xlsx, status committed) |
 | Fonte legada | `powerapps-voa` |
 | Staging | `localhost:5434/voa_staging` |
 | Canonico | `localhost:5434/voa_staging` |
 | Topologia | staging e canonico no mesmo banco |
-| Entidades prontas | 8 |
+| Entidades prontas | 10 |
 | Entidades bloqueadas | 1 |
-| Linhas legadas avaliadas | 121991 |
-| Linhas carregadas | 104709 |
+| Linhas legadas avaliadas | 176205 |
+| Linhas carregadas | 150018 |
 | Linhas novas | 0 |
-| Linhas reutilizadas (idempotencia) | 104709 |
-| Linhas descartadas | 17282 |
-| Achados registrados | 21 |
-| Escrita canonica nesta rodada | nao |
+| Linhas reutilizadas (idempotencia) | 150018 |
+| Linhas descartadas | 26187 |
+| Achados registrados | 27 |
+| Escrita canonica nesta rodada | sim |
 
 ## Plano por entidade canonica
 
@@ -30,9 +30,11 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | `asaas_customers` | ready |  | customers | 3 | nenhuma |
 | `contacts` | ready |  | customers | 4 | nenhuma |
 | `customers` | ready |  | - | 3 | nenhuma |
+| `guardians` | ready |  | students | 7 | nenhuma |
 | `installments` | ready |  | agreements | 5 | nenhuma |
 | `payments` | ready |  | installments | 9 | nenhuma |
 | `schools` | ready |  | - | 4 | nenhuma |
+| `student_contacts` | ready |  | students | 6 | nenhuma |
 | `students` | ready |  | schools | 4 | nenhuma |
 
 ## Colunas derivadas (agregados)
@@ -77,7 +79,6 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | TBL_EMAILCOBRANCA | no_mapping | - | 148 | 0 | 0 | 0 |
 | TBL_EMAILLISTACONTATO | no_mapping | - | 0 | 0 | 0 | 0 |
 | TBL_EMPRESA | no_mapping | - | 15 | 0 | 0 | 0 |
-| TBL_ENDTEL | no_mapping | - | 47562 | 0 | 0 | 0 |
 | TBL_EXTRATO | no_mapping | - | 0 | 0 | 0 | 0 |
 | TBL_EXTRATOOLD_FINANCEIRO | no_mapping | - | 64451 | 0 | 0 | 0 |
 | TBL_EXTRATO_FINANCEIRO | no_mapping | - | 39944 | 0 | 0 | 0 |
@@ -106,8 +107,9 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | TBL_SUBITEMEXTRATO | no_mapping | - | 7 | 0 | 0 | 0 |
 | TBL_TAXAESCOLA | no_mapping | - | 1182 | 0 | 0 | 0 |
 | TBL_USER | no_mapping | - | 28 | 0 | 0 | 0 |
-| TBL_ALUNO | carregada | students | 6652 | 6641 | 11 | 0 |
+| TBL_ALUNO | carregada | students, guardians | 6652 | 6641 | 11 | 0 |
 | TBL_PAGAMENTO | carregada | customers, agreements, asaas_customers | 1572 | 1505 | 67 | 0 |
+| TBL_ENDTEL | carregada | student_contacts | 47562 | 38962 | 8600 | 0 |
 | TBL_CLIENTEENDTEL | carregada | contacts | 54782 | 46829 | 7953 | 0 |
 | TBL_PAGAMENTO_LISTAGEM | carregada | installments, payments | 15535 | 15259 | 276 | 0 |
 
@@ -119,9 +121,11 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | `asaas_customers` | 1572 | 1120 | 0 | 1120 | 0 | 452 | LOAD_DUPLICATE_ROW=2, LOAD_REQUIRED_FIELD_EMPTY=446, LOAD_ROW_LINK_UNRESOLVED=4 |
 | `contacts` | 54782 | 46829 | 0 | 46829 | 0 | 7953 | LOAD_REFERENCE_UNRESOLVED=7648, LOAD_REQUIRED_FIELD_EMPTY=305 |
 | `customers` | 26268 | 26264 | 0 | 26264 | 0 | 4 | LOAD_REQUIRED_FIELD_EMPTY=4 |
+| `guardians` | 6652 | 6347 | 0 | 6347 | 0 | 305 | LOAD_REQUIRED_FIELD_EMPTY=294, LOAD_ROW_LINK_UNRESOLVED=11 |
 | `installments` | 15535 | 15259 | 0 | 15259 | 0 | 276 | LOAD_DUPLICATE_ROW=263, LOAD_REFERENCE_UNRESOLVED=3, LOAD_REQUIRED_FIELD_EMPTY=10 |
 | `payments` | 15535 | 7016 | 0 | 7016 | 0 | 8519 | LOAD_REQUIRED_FIELD_EMPTY=8243, LOAD_ROW_LINK_UNRESOLVED=276 |
 | `schools` | 75 | 75 | 0 | 75 | 0 | 0 | - |
+| `student_contacts` | 47562 | 38962 | 0 | 38962 | 0 | 8600 | LOAD_REFERENCE_UNRESOLVED=2797, LOAD_REQUIRED_FIELD_EMPTY=5803 |
 | `students` | 6652 | 6641 | 0 | 6641 | 0 | 11 | LOAD_REFERENCE_UNRESOLVED=1, LOAD_REQUIRED_FIELD_EMPTY=10 |
 
 ## Totais monetarios por tabela
@@ -140,10 +144,16 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 |---|---|---|---:|---|
 | TBL_ALUNO | `LOAD_REFERENCE_UNRESOLVED` | Aluno.Escola.ID | 1 | linha 6160: students: Aluno.Escola.ID=16 sem registro em schools |
 | TBL_ALUNO | `LOAD_REQUIRED_FIELD_EMPTY` | Aluno.Nome | 10 | linha 24: students: Aluno.Nome vazio na origem; linha 557: students: Aluno.Nome vazio na origem; linha 983: students: Aluno.Nome vazio na origem |
+| TBL_ALUNO | `LOAD_REQUIRED_FIELD_EMPTY` | Aluno.Responsavel_Financeiro | 294 | linha 241: guardians: Aluno.Responsavel_Financeiro vazio na origem; linha 3865: guardians: Aluno.Responsavel_Financeiro vazio na origem; linha 3877: guardians: Aluno.Responsavel_Financeiro vazio na origem |
+| TBL_ALUNO | `LOAD_ROW_LINK_UNRESOLVED` | guardians.student_id -> students | 11 | linha 24: guardians: vinculo da propria linha nao resolvido; linha 557: guardians: vinculo da propria linha nao resolvido; linha 983: guardians: vinculo da propria linha nao resolvido |
 | TBL_ALUNO | `LOAD_VALUE_DEFAULTED` | Aluno_Ativo | 114 | linha 6194: students.status vazio na origem; usado padrao canonico 'active'; linha 6197: students.status vazio na origem; usado padrao canonico 'active'; linha 6198: students.status vazio na origem; usado padrao canonico 'active' |
 | TBL_CLIENTEENDTEL | `LOAD_REFERENCE_UNRESOLVED` | CLIENTEENDTEL_CLIENTE_ID | 7648 | linha 36: contacts: CLIENTEENDTEL_CLIENTE_ID=14508 sem registro em customers; linha 37: contacts: CLIENTEENDTEL_CLIENTE_ID=14723 sem registro em customers; linha 38: contacts: CLIENTEENDTEL_CLIENTE_ID=14743 sem registro em customers |
 | TBL_CLIENTEENDTEL | `LOAD_REQUIRED_FIELD_EMPTY` | CLIENTEENDTEL_CLIENTE_ID | 5 | linha 1435: contacts: CLIENTEENDTEL_CLIENTE_ID vazio na origem; linha 1693: contacts: CLIENTEENDTEL_CLIENTE_ID vazio na origem; linha 11422: contacts: CLIENTEENDTEL_CLIENTE_ID vazio na origem |
 | TBL_CLIENTEENDTEL | `LOAD_REQUIRED_FIELD_EMPTY` | CLIENTEENDTEL_VALOR | 300 | linha 2: contacts: CLIENTEENDTEL_VALOR vazio na origem; linha 3: contacts: CLIENTEENDTEL_VALOR vazio na origem; linha 4: contacts: CLIENTEENDTEL_VALOR vazio na origem |
+| TBL_ENDTEL | `LOAD_REFERENCE_UNRESOLVED` | ENDTEL_ALUNO_ID | 2797 | linha 2: student_contacts: ENDTEL_ALUNO_ID=625 sem registro em students; linha 12: student_contacts: ENDTEL_ALUNO_ID=635 sem registro em students; linha 40: student_contacts: ENDTEL_ALUNO_ID=663 sem registro em students |
+| TBL_ENDTEL | `LOAD_REQUIRED_FIELD_EMPTY` | ENDTEL_ALUNO_ID | 1 | linha 8465: student_contacts: ENDTEL_ALUNO_ID vazio na origem |
+| TBL_ENDTEL | `LOAD_REQUIRED_FIELD_EMPTY` | ENDTEL_TIPO | 5389 | linha 3: student_contacts: ENDTEL_TIPO vazio na origem; linha 4: student_contacts: ENDTEL_TIPO vazio na origem; linha 5: student_contacts: ENDTEL_TIPO vazio na origem |
+| TBL_ENDTEL | `LOAD_REQUIRED_FIELD_EMPTY` | ENDTEL_VALOR | 413 | linha 5994: student_contacts: ENDTEL_VALOR vazio na origem; linha 5995: student_contacts: ENDTEL_VALOR vazio na origem; linha 5996: student_contacts: ENDTEL_VALOR vazio na origem |
 | TBL_PAGAMENTO | `LOAD_AGGREGATE_MISSING` | agreements.total_amount <- TBL_PAGAMENTO_LISTAGEM | 63 | linha 10: agreements: sem agregado de TBL_PAGAMENTO_LISTAGEM (sum de Pagamento_Listagem.Valor_Parcela) para o id legado 1704; linha 25: agreements: sem agregado de TBL_PAGAMENTO_LISTAGEM (sum de Pagamento_Listagem.Valor_Parcela) para o id legado 1686; linha 89: agreements: sem agregado de TBL_PAGAMENTO_LISTAGEM (sum de Pagamento_Listagem.Valor_Parcela) para o id legado 1617 |
 | TBL_PAGAMENTO | `LOAD_DUPLICATE_ROW` | external_id | 2 | linha 632: asaas_customers: external_id ja existe no canonico (linha TBL_PAGAMENTO.632); linha 825: asaas_customers: external_id ja existe no canonico (linha TBL_PAGAMENTO.825) |
 | TBL_PAGAMENTO | `LOAD_REFERENCE_MULTIVALUE` | Pagamento.Aluno_ID | 110 | linha 26: agreements.student_id recebeu 2 ids: 6661;6662; linha 40: agreements.student_id recebeu 2 ids: 380;379; linha 46: agreements.student_id recebeu 2 ids: 375;374 |
@@ -169,9 +179,11 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | `asaas_customers` | 1120 | 1120 |
 | `contacts` | 46829 | 46829 |
 | `customers` | 26264 | 26264 |
+| `guardians` | 6347 | 6347 |
 | `installments` | 15259 | 15259 |
 | `payments` | 7016 | 7016 |
 | `schools` | 75 | 75 |
+| `student_contacts` | 38962 | 38962 |
 | `students` | 6641 | 6641 |
 
 ## Bloqueios e proximos passos

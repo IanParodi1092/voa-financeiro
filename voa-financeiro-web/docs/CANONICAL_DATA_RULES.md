@@ -21,7 +21,8 @@ A combinacao `(legacy_source, legacy_table, legacy_id)` deve ser unica quando a 
 | `contacts` (46.829 linhas), `installments` (15.259 linhas) | desde a `0009`, com backfill | mesma chave; as linhas gravadas antes da `0009` foram carimbadas por `npm run db:backfill-legacy-provenance` (recalcula o UUID deterministico da linha de origem) |
 | `payments`, `asaas_customers`, `asaas_charges` | nao tem | UUID deterministico `uuid5(carga, "aba:linha")`; o legado nao guarda id de pagamento/cobranca e o vinculo vem de `links` (`payments.installment_id = "row:installments"`) |
 | `users` | `legacy_source/legacy_table/legacy_id` desde a `0010` | ainda sem carga: `TBL_USER.ID` segue em `review` porque a entrada exige politica de credencial (`password_hash` e `NOT NULL` e a senha do legado nao migra) |
-| `student_contacts` | `legacy_source/legacy_table/legacy_id` desde a `0010` | ainda sem carga: a aba `TBL_ENDTEL` (47.562 linhas) nao esta mapeada |
+| `student_contacts` | `legacy_source/legacy_table/legacy_id` desde a `0010` | carregado de `TBL_ENDTEL` com `status: proposed` no dicionario: 38.962 das 47.562 linhas entram por essa chave (as demais nao tem tipo/valor ou apontam para aluno fora da carga) |
+| `guardians` | `legacy_source/legacy_table/legacy_id` desde a `0011` | o legado nao tem id de responsavel: a chave e a da linha do aluno (`legacy_id = TBL_ALUNO.ID`, `legacy_table = TBL_ALUNO`), um guardiao por aluno, e a carga vem com `status: proposed` |
 
 Regra de operacao: a chave legada so vale para uma tabela quando o dicionario declara
 `provides_legacy_id_for` nela. Criar a coluna sem carimbar as linhas antigas faz a carga seguinte
@@ -68,12 +69,23 @@ Tabela canonica: `students`.
 - `id`: UUID unico do aluno.
 - `legacy_id`: ID de `TBL_ALUNO` preservado.
 - `school_id`: escola obrigatoria.
-- `customer_id`: responsavel financeiro opcional, resolvido por CPF/CNPJ e revisao.
+- `customer_id`: cliente pagador opcional. **Nao** e preenchido pelo responsavel do legado: `Aluno.CPFResponsavel` nao existe em `customers` (os documentos de la sao CNPJ de `TBL_CLIENTE`) e nome nao identifica cliente. O responsavel fica em `guardians`.
 - `full_name`, documento do aluno quando existir, matricula quando existir.
 - Regra forte: `(school_id, enrollment_number)` unica quando matricula existir.
 - Documento do aluno normalizado deve ser unico quando existir.
 - CPF do responsavel nunca e usado como ID do aluno.
 - Duplicidades sem documento/matricula vao para fila de revisao, nao para merge automatico.
+
+## Responsaveis do aluno (`guardians`)
+
+Tabela canonica: `guardians` (migration `0011`), filha de `students`.
+
+- Uma linha de `TBL_ALUNO` gera no maximo um guardiao: `full_name` vem de `Aluno.Responsavel_Financeiro` (6.350 de 6.652 alunos) e `document_number` de `Aluno.CPFResponsavel`.
+- `document_number` guarda o CPF como esta na origem, somente digitos: 1.084 dos 6.651 preenchidos nao passam no digito verificador e continuam gravados como registro, nao como chave. Documento invalido nunca vincula pessoa.
+- `document_rg`, `marital_status` e `occupation` vem de `Aluno_RGResponsavel`, `Aluno_ResponsavelEstadoCivil` e `Aluno_ResponsavelProfissao` (621, 585 e 585 linhas). Sao texto livre: `marital_status` tem valores que nao sao estado civil (um CPF, um nome, `GARCOM`) e entra como veio, sem traducao.
+- `customer_id` nasce **nulo** e `is_verified` **falso**: o guardiao e uma pessoa do legado, nao um cliente pagador. Vira `customers` so por conciliacao assistida, nunca por nome.
+- `is_financial` marca o responsavel financeiro do aluno (origem: `Aluno.Responsavel_Financeiro`); `is_financial` e `is_verified` sao decisoes do canonico, nao do legado.
+- `guardians.customer_id` nao substitui `students.customer_id`: o primeiro e o responsavel declarado, o segundo o pagador do acordo.
 
 ## Acordos, dividas e parcelas
 
@@ -106,7 +118,11 @@ A identificacao exibida para o operador deve combinar um codigo curto legivel co
 
 - Contatos sao registros proprios, nao colunas duplicadas em cada entidade.
 - `contacts.customer_id` referencia o cliente.
-- Contato do aluno fica em `student_contacts.student_id` (tabela criada na `0010`): `contacts` e restrito a `customers`, porque `customer_id` e `NOT NULL` e o contato pertence ao aluno, nao ao pagador.
+- Contato do aluno fica em `student_contacts.student_id` (tabela criada na `0010`, com `status` desde a `0011`): `contacts` e restrito a `customers`, porque `customer_id` e `NOT NULL` e o contato pertence ao aluno, nao ao pagador.
+- `student_contacts.type` recebe `phone`, `email` ou `address` a partir de `ENDTEL_TIPO`; endereco entra como tipo de contato porque a origem guarda os tres no mesmo cadastro.
+- `student_contacts.status` recebe `active`/`inactive` de `ENDTEL_STATUS` (`ATIVADO`/`DESATIVADO`) e nasce `active`. Contato desativado nao e apagado.
+- `is_verified` continua falso: `ATIVADO` significa que o contato esta em uso, nao que foi confirmado com o aluno.
+- Linha de `TBL_ENDTEL` sem valor nao vira contato: 6.445 das 47.562 linhas da aba estao vazias em `ENDTEL_VALOR` (5.988 delas tambem sem tipo e sem status) e nao ha dado a gravar.
 - Historico de contato do aluno deve ser separado de dados atuais de telefone/e-mail.
 - Telefone e e-mail devem ser normalizados e marcados como primarios/verificados.
 - ChatGuru e e-mail devem registrar consentimento, template, tentativa, resposta e entrega.
@@ -125,8 +141,8 @@ Esses valores devem ser revogados e configurados somente no ambiente seguro do s
 ## Ordem de carga
 
 1. escolas e clientes;
-2. contatos e enderecos;
-3. alunos e vinculos responsavel/escola;
+2. contatos e enderecos de clientes;
+3. alunos, guardioes (`guardians`) e contatos do aluno (`student_contacts`);
 4. dividas/acordos;
 5. parcelas;
 6. clientes e cobrancas Asaas por mapeamento explicito;

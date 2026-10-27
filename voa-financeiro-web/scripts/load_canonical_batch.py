@@ -1326,7 +1326,7 @@ class LoadState:
 
 def canonical_tables_for_counts(plan: dict[str, TablePlan]) -> list[str]:
     tables = [table for table in CANONICAL_TABLES if table in plan]
-    for extra in ("contacts", "users", "retention_ledger", "asaas_customers"):
+    for extra in ("contacts", "users", "retention_ledger", "asaas_customers", "student_contacts", "guardians"):
         if extra in plan and extra not in tables:
             tables.append(extra)
     return tables or list(plan)

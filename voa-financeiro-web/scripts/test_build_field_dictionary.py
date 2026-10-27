@@ -388,9 +388,42 @@ class RealDictionaryTests(unittest.TestCase):
 
     def test_open_decisions_stay_blocked(self) -> None:
         reasons = {item.get("reason") for item in self.validation["policy"]}
-        self.assertIn("unreliable_document_source", reasons)
         self.assertIn("pending_policy", reasons)
-        self.assertIn("name_only_link_not_allowed", reasons)
+        self.assertIn("user_import_requires_credential_reset", reasons)
+
+    def test_class_c_reopens_as_proposed_with_guardians(self) -> None:
+        """A classe C saiu do `review` quando `guardians` nasceu na migration 0011.
+
+        O vinculo nao ficou confirmado: as colunas do responsavel entram como `proposed`, entao
+        gravar guardiao continua exigindo `--allow-proposed guardians` na carga.
+        """
+        expected = {
+            "Aluno.Responsavel_Financeiro": "guardians.full_name",
+            "Aluno.CPFResponsavel": "guardians.document_number",
+            "Aluno_RGResponsavel": "guardians.document_rg",
+            "Aluno_ResponsavelEstadoCivil": "guardians.marital_status",
+            "Aluno_ResponsavelProfissao": "guardians.occupation",
+        }
+        columns = {column["column"]: column for column in self.resolved["TBL_ALUNO"]["columns"]}
+        for source, target in expected.items():
+            self.assertEqual(columns[source]["decision"], MAP, source)
+            self.assertEqual(columns[source]["target"], target, source)
+            self.assertEqual(columns[source]["status"], "proposed", source)
+
+    def test_student_contacts_load_is_proposed(self) -> None:
+        """`TBL_ENDTEL` virou entidade de `student_contacts`, ainda sem aprovacao da carga."""
+        expected = {
+            "ENDTEL_ALUNO_ID": "student_contacts.student_id",
+            "ENDTEL_TIPO": "student_contacts.type",
+            "ENDTEL_VALOR": "student_contacts.value",
+            "ENDTEL_PRINCIPAL": "student_contacts.is_primary",
+            "ENDTEL_STATUS": "student_contacts.status",
+        }
+        columns = {column["column"]: column for column in self.resolved["TBL_ENDTEL"]["columns"]}
+        for source, target in expected.items():
+            self.assertEqual(columns[source]["decision"], MAP, source)
+            self.assertEqual(columns[source]["target"], target, source)
+            self.assertEqual(columns[source]["status"], "proposed", source)
 
 
 class ClassDSchemaTests(unittest.TestCase):
@@ -417,6 +450,42 @@ class ClassDSchemaTests(unittest.TestCase):
     def test_users_has_the_legacy_key(self) -> None:
         for column in ("legacy_source", "legacy_table", "legacy_id"):
             self.assertIn(column, self.schema.get("users", set()))
+
+
+class ClassCSchemaTests(unittest.TestCase):
+    """A entidade `guardians` da migration `0011` e o status de `student_contacts`.
+
+    O dicionario passou a apontar para as duas tabelas (classe C e `TBL_ENDTEL`), entao uma
+    remocao acidental de `0011` apareceria como `TARGET_TABLE_UNKNOWN`/`TARGET_COLUMN_UNKNOWN` no
+    portao estrutural - este teste garante que a migration em si continua sendo a origem disso.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.schema = parse_canonical_schema()
+
+    def test_guardians_hangs_from_the_student(self) -> None:
+        self.assertIn("guardians", self.schema)
+        self.assertIn("student_id", self.schema["guardians"])
+
+    def test_guardians_holds_the_guardian_attributes(self) -> None:
+        expected = {
+            "customer_id",
+            "full_name",
+            "document_number",
+            "document_rg",
+            "marital_status",
+            "occupation",
+            "is_financial",
+            "is_verified",
+            "legacy_source",
+            "legacy_table",
+            "legacy_id",
+        }
+        self.assertLessEqual(expected, self.schema["guardians"])
+
+    def test_student_contacts_has_the_legacy_status(self) -> None:
+        self.assertIn("status", self.schema.get("student_contacts", set()))
 
 
 if __name__ == "__main__":
