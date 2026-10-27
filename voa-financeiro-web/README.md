@@ -18,7 +18,7 @@ Nenhuma credencial real nem dado legado versionado faz parte deste repositorio, 
 - `npm run typecheck`
 - `npm test`
 - `npm run build`
-- `npm run test:integration` (testes de auth, RBAC, dominio e migracao; exigem `TEST_DATABASE_URL`, ver `docs/LOCAL_DEVELOPMENT.md`; sem ela o bloco e ignorado)
+- `npm run test:integration` (testes de auth, RBAC, dominio, migracao e da fila outbox; exigem `TEST_DATABASE_URL`, ver `docs/LOCAL_DEVELOPMENT.md`; sem ela o bloco e ignorado)
 - `npm run test:python` (scripts de migracao; requer `scripts/requirements.txt`)
 
 ## Migracao do legado
