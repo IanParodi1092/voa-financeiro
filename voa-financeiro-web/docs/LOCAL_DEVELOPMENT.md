@@ -81,13 +81,14 @@ lote, `validate`/`commit` com bloqueio aberto, triagem de achado) - com `GET /au
 `admin`.
 
 Para criar o primeiro administrador no banco local, aponte as duas variaveis (`create-admin` prefere
-`DIRECT_DATABASE_URL`) e informe e-mail e senha temporarios:
+`DIRECT_DATABASE_URL`) e informe e-mail e senha temporarios. O script `auth:create-admin` vive no
+workspace `apps/api` (nao ha alias no `package.json` da raiz), entao o comando sai por `--workspace`:
 
 ```powershell
 $env:DIRECT_DATABASE_URL = "postgresql://postgres:SENHA@localhost:5434/voa_staging"
 $env:ADMIN_EMAIL = "admin@voa.local"
 $env:ADMIN_PASSWORD = "troque-esta-senha-123"
-npm run auth:create-admin
+npm --workspace apps/api run auth:create-admin
 ```
 
 O login devolve o access token e o cookie `voa_refresh`; a senha temporaria deve ser trocada assim que
