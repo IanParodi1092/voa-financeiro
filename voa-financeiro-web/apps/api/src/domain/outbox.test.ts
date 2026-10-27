@@ -122,6 +122,16 @@ describe('classificacao de falha', () => {
     expect(classifyFailure(provider(0))).toMatchObject({ action: 'dead' });
     expect(classifyFailure(provider(302))).toMatchObject({ action: 'dead' });
   });
+
+  it('erro de infraestrutura (banco, socket, DNS) e retry nao ambiguo', () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5434'), { code: 'ECONNREFUSED' });
+    expect(classifyFailure(refused)).toMatchObject({ action: 'retry', ambiguous: false });
+    const connectionFailure = Object.assign(new Error('terminating connection'), { code: '08006' });
+    expect(classifyFailure(connectionFailure)).toMatchObject({ action: 'retry', ambiguous: false });
+    // Erro de dado do Postgres (classe 23) continua dead: o mesmo INSERT falharia sempre.
+    const constraint = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(classifyFailure(constraint)).toMatchObject({ action: 'dead' });
+  });
 });
 
 describe('topics', () => {

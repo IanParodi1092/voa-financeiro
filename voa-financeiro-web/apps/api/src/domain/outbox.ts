@@ -137,6 +137,31 @@ export interface FailureVerdict {
  * Um 401/403 merece `log.error` no worker alem do `dead`: e chave errada ou integracao revogada, e o
  * sintoma so aparece quando a fila ja parou.
  */
+/**
+ * Codigos de infraestrutura que merecem retry mesmo sem `status` HTTP: banco fora do ar, DNS, socket
+ * fechado. Sao erros **nao ambiguos** (nada saiu para o provedor), mas tambem nao sao erro de dado -
+ * marcar `dead` aqui mataria uma cobranca por um blip de conexao.
+ */
+const TRANSIENT_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  '57P01',
+  '57P03',
+  '53300'
+]);
+
+function transientCodeOf(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code !== 'string') return null;
+  if (TRANSIENT_ERROR_CODES.has(code)) return code;
+  // Classe 08 do Postgres: connection exception (o pool reconecta na proxima tentativa).
+  return code.startsWith('08') ? code : null;
+}
+
 export function classifyFailure(error: unknown): FailureVerdict {
   if (error instanceof OutboxPayloadError) {
     return { action: 'dead', reason: error.message, ambiguous: false };
@@ -168,6 +193,11 @@ export function classifyFailure(error: unknown): FailureVerdict {
       return { action: 'dead', reason: `${status}: ${error.message}`, ambiguous: false };
     }
     return { action: 'dead', reason: `unexpected status ${status}: ${error.message}`, ambiguous: false };
+  }
+  const transient = transientCodeOf(error);
+  if (transient) {
+    const detail = error instanceof Error ? `${transient}: ${error.message}` : `unknown error: ${transient}`;
+    return { action: 'retry', reason: detail, ambiguous: false };
   }
   const message = error instanceof Error ? `${error.name}: ${error.message}` : `unknown error: ${String(error)}`;
   return { action: 'dead', reason: message, ambiguous: false };
