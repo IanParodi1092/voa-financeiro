@@ -23,6 +23,8 @@ const useStyles = makeStyles({
   linkRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '16px' },
   linkMeta: { margin: 0, color: '#3d5a50', fontSize: '13px' },
   linkCandidates: { margin: 0, paddingLeft: '18px', color: '#123b50', fontSize: '13px' },
+  linkCandidate: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '2px 0' },
+  linkActions: { display: 'flex', justifyContent: 'flex-end', marginTop: '6px' },
   linkPager: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', marginTop: '20px', fontSize: '13px' }
 });
 
@@ -100,6 +102,8 @@ function App() {
   const [linkStatus, setLinkStatus] = useState<GuardianLinkStatus | ''>('');
   const [showLinks, setShowLinks] = useState(false);
   const [linkLoading, setLinkLoading] = useState(false);
+  const [busy, setBusy] = useState<{ guardianId: string; action: 'link' | 'unlink' } | null>(null);
+  const [notice, setNotice] = useState('');
 
   useEffect(() => {
     if (!token) return;
@@ -126,7 +130,7 @@ function App() {
     } finally { setLoading(false); }
   }
 
-  function logout() { localStorage.removeItem(TOKEN_KEY); setToken(null); setUser(null); }
+  function logout() { localStorage.removeItem(TOKEN_KEY); setToken(null); setUser(null); setNotice(''); }
 
   async function loadCustomers() {
     if (!token) return;
@@ -196,6 +200,7 @@ function App() {
   async function loadGuardianLinks(status: GuardianLinkStatus | '' = linkStatus, offset = 0) {
     if (!token) return;
     setError('');
+    setNotice('');
     setLinkLoading(true);
     try {
       const query = new URLSearchParams({ limit: String(GUARDIAN_LINK_PAGE), offset: String(offset) });
@@ -210,29 +215,111 @@ function App() {
     }
   }
 
+  /**
+   * Grava o estado de vinculo que o operador confirmou na fila: `PATCH /guardians/:id` com o par
+   * `{ customerId, isVerified }`. Vincular envia `{ customerId: <uuid>, isVerified: true }` (o mesmo
+   * corpo que a tela de detalhe envia quando confirma o par) e desvincular envia
+   * `{ customerId: null, isVerified: false }`, porque a verificacao era **daquele** par: mante-la alta
+   * depois de desfazer o vinculo deixaria um guardiao "verificado" sem cliente.
+   *
+   * A trava continua sendo do servidor (`customer_not_payer` recusa cliente que nao paga acordo do
+   * aluno, `catalog:write` barra o viewer): aqui so evitamos procurar o cliente em outra aba.
+   *
+   * Em sucesso a fila e recarregada na mesma pagina, porque o item muda de `single`/`ambiguous`/
+   * `linked` e sai do filtro atual. `401` e `403` ganham mensagem propria em vez de "falhou": token
+   * vencido e falta de permissao sao causas diferentes e a acao do operador tambem.
+   */
+  async function patchGuardian(
+    item: GuardianLinkItem,
+    body: { customerId: string | null; isVerified: boolean },
+    action: 'link' | 'unlink',
+    done: string
+  ) {
+    if (!token) return;
+    setError('');
+    setNotice('');
+    const offset = linkQueue?.offset ?? 0;
+    setBusy({ guardianId: item.guardianId, action });
+    try {
+      const response = await fetch(`${API_URL}/api/v1/guardians/${item.guardianId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body)
+      });
+      if (response.ok) {
+        await loadGuardianLinks(linkStatus, offset);
+        setNotice(done);
+        return;
+      }
+      if (response.status === 401) { setError('Sessão expirada. Saia e entre novamente para alterar o vínculo.'); return; }
+      if (response.status === 403) { setError('Seu perfil não permite alterar vínculos: a rota exige catalog:write.'); return; }
+      const problem = (await response.json().catch(() => null)) as { code?: string } | null;
+      if (problem?.code === 'CUSTOMER_NOT_PAYER') {
+        setError('Este cliente não paga acordo do aluno deste responsável. Recarregue a fila e escolha outro.');
+        return;
+      }
+      setError(action === 'link' ? 'Não foi possível vincular o responsável.' : 'Não foi possível desvincular o responsável.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function linkGuardian(item: GuardianLinkItem, candidate: GuardianLinkCandidate) {
+    return patchGuardian(
+      item,
+      { customerId: candidate.customerId, isVerified: true },
+      'link',
+      `${item.guardianName} foi vinculado a ${candidate.fullName}.`
+    );
+  }
+
+  function unlinkGuardian(item: GuardianLinkItem) {
+    return patchGuardian(
+      item,
+      { customerId: null, isVerified: false },
+      'unlink',
+      `${item.guardianName} voltou para a fila de conciliação.`
+    );
+  }
+
   if (token && !user) return <main className={styles.page}><Spinner label="Validando sessão" /></main>;
   if (!user) return <main className={styles.page}><section className={styles.panel}><div className={styles.brand}><Subtitle1>VOA FINANCEIRO</Subtitle1><Title1>Acesso administrativo</Title1></div><form className={styles.form} onSubmit={login}>{error && <MessageBar intent="error">{error}</MessageBar>}<Field label="E-mail" required><Input type="email" value={email} onChange={(_, data) => setEmail(data.value)} /></Field><Field label="Senha" required><Input type="password" value={password} onChange={(_, data) => setPassword(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit" disabled={loading}>{loading ? 'Entrando...' : 'Entrar'}</Button></div></form></section></main>;
-  return <main className={styles.page}><section className={styles.dashboard}><header className={styles.header}><div className={styles.brand}><Subtitle1>PAINEL OPERACIONAL</Subtitle1><Title1>Olá, {user.name ?? 'administrador'}</Title1></div><Button appearance="secondary" onClick={logout}>Sair</Button></header>{error && <MessageBar intent="error">{error}</MessageBar>}<div className={styles.grid}><Button className={styles.metric} appearance="subtle" onClick={loadCustomers}><Subtitle1>Clientes</Subtitle1><p>Cadastro e contatos</p></Button><Button className={styles.metric} appearance="subtle" onClick={loadStudents}><Subtitle1>Alunos</Subtitle1><p>Escolas e responsáveis</p></Button><div className={styles.metric}><Subtitle1>Cobranças</Subtitle1><p>Boletos e pagamentos</p></div><Button className={styles.metric} appearance="subtle" onClick={loadSchools}><Subtitle1>Escolas</Subtitle1><p>Alunos e acordos</p></Button><Button className={styles.metric} appearance="subtle" onClick={() => loadGuardianLinks('', 0)}><Subtitle1>Responsáveis</Subtitle1><p>Vínculo com clientes</p></Button></div>{showLinks && linkQueue && <GuardianLinkPanel queue={linkQueue} loading={linkLoading} status={linkStatus} onFilter={(next) => loadGuardianLinks(next, 0)} onPage={(offset) => loadGuardianLinks(linkStatus, offset)} onClose={() => setShowLinks(false)} />}{showCustomers && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Clientes cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowCustomers(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createCustomer}><Field label="Nome completo" required><Input value={newCustomerName} onChange={(_, data) => setNewCustomerName(data.value)} /></Field><Field label="E-mail"><Input type="email" value={newCustomerEmail} onChange={(_, data) => setNewCustomerEmail(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar cliente</Button></div></form><ul className={styles.list}>{customers.map((customer) => <li key={customer.id}><strong>{customer.fullName}</strong><span>{customer.email ?? 'Sem e-mail'}</span></li>)}</ul></section>}{showStudents && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Alunos cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowStudents(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createStudent}><Field label="Nome do aluno" required><Input value={newStudentName} onChange={(_, data) => setNewStudentName(data.value)} /></Field><Field label="Escola" required><select className="school-select" value={newStudentSchoolId} onChange={(event) => setNewStudentSchoolId(event.target.value)}><option value="">Selecione uma escola</option>{schools.map((school) => <option key={school.id} value={school.id}>{school.tradeName ?? school.legalName}</option>)}</select></Field><div className={styles.actions}><Button appearance="primary" type="submit" disabled={!newStudentSchoolId}>Cadastrar aluno</Button></div></form><ul className={styles.list}>{students.map((student) => <li key={student.id}><strong>{student.fullName}</strong><span>{schools.find((school) => school.id === student.schoolId)?.legalName ?? 'Escola'}</span></li>)}</ul></section>}{showSchools && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Escolas cadastradas</Subtitle1><Button appearance="secondary" onClick={() => setShowSchools(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createSchool}><Field label="Razão social" required><Input value={newSchoolName} onChange={(_, data) => setNewSchoolName(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar escola</Button></div></form><ul className={styles.list}>{schools.map((school) => <li key={school.id}><strong>{school.tradeName ?? school.legalName}</strong><span>{school.legalName}</span></li>)}</ul></section>}</section></main>;
+  return <main className={styles.page}><section className={styles.dashboard}><header className={styles.header}><div className={styles.brand}><Subtitle1>PAINEL OPERACIONAL</Subtitle1><Title1>Olá, {user.name ?? 'administrador'}</Title1></div><Button appearance="secondary" onClick={logout}>Sair</Button></header>{error && <MessageBar intent="error">{error}</MessageBar>}{notice && <MessageBar intent="success">{notice}</MessageBar>}<div className={styles.grid}><Button className={styles.metric} appearance="subtle" onClick={loadCustomers}><Subtitle1>Clientes</Subtitle1><p>Cadastro e contatos</p></Button><Button className={styles.metric} appearance="subtle" onClick={loadStudents}><Subtitle1>Alunos</Subtitle1><p>Escolas e responsáveis</p></Button><div className={styles.metric}><Subtitle1>Cobranças</Subtitle1><p>Boletos e pagamentos</p></div><Button className={styles.metric} appearance="subtle" onClick={loadSchools}><Subtitle1>Escolas</Subtitle1><p>Alunos e acordos</p></Button><Button className={styles.metric} appearance="subtle" onClick={() => loadGuardianLinks('', 0)}><Subtitle1>Responsáveis</Subtitle1><p>Vínculo com clientes</p></Button></div>{showLinks && linkQueue && <GuardianLinkPanel queue={linkQueue} loading={linkLoading} status={linkStatus} busy={busy} onFilter={(next) => loadGuardianLinks(next, 0)} onPage={(offset) => loadGuardianLinks(linkStatus, offset)} onLink={linkGuardian} onUnlink={unlinkGuardian} onClose={() => setShowLinks(false)} />}{showCustomers && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Clientes cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowCustomers(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createCustomer}><Field label="Nome completo" required><Input value={newCustomerName} onChange={(_, data) => setNewCustomerName(data.value)} /></Field><Field label="E-mail"><Input type="email" value={newCustomerEmail} onChange={(_, data) => setNewCustomerEmail(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar cliente</Button></div></form><ul className={styles.list}>{customers.map((customer) => <li key={customer.id}><strong>{customer.fullName}</strong><span>{customer.email ?? 'Sem e-mail'}</span></li>)}</ul></section>}{showStudents && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Alunos cadastrados</Subtitle1><Button appearance="secondary" onClick={() => setShowStudents(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createStudent}><Field label="Nome do aluno" required><Input value={newStudentName} onChange={(_, data) => setNewStudentName(data.value)} /></Field><Field label="Escola" required><select className="school-select" value={newStudentSchoolId} onChange={(event) => setNewStudentSchoolId(event.target.value)}><option value="">Selecione uma escola</option>{schools.map((school) => <option key={school.id} value={school.id}>{school.tradeName ?? school.legalName}</option>)}</select></Field><div className={styles.actions}><Button appearance="primary" type="submit" disabled={!newStudentSchoolId}>Cadastrar aluno</Button></div></form><ul className={styles.list}>{students.map((student) => <li key={student.id}><strong>{student.fullName}</strong><span>{schools.find((school) => school.id === student.schoolId)?.legalName ?? 'Escola'}</span></li>)}</ul></section>}{showSchools && <section className={styles.customerSection}><div className={styles.header}><Subtitle1>Escolas cadastradas</Subtitle1><Button appearance="secondary" onClick={() => setShowSchools(false)}>Fechar</Button></div><form className={styles.form} onSubmit={createSchool}><Field label="Razão social" required><Input value={newSchoolName} onChange={(_, data) => setNewSchoolName(data.value)} /></Field><div className={styles.actions}><Button appearance="primary" type="submit">Cadastrar escola</Button></div></form><ul className={styles.list}>{schools.map((school) => <li key={school.id}><strong>{school.tradeName ?? school.legalName}</strong><span>{school.legalName}</span></li>)}</ul></section>}</section></main>;
 }
 
 type GuardianLinkPanelProps = {
   queue: GuardianLinkQueue;
   loading: boolean;
   status: GuardianLinkStatus | '';
+  busy: { guardianId: string; action: 'link' | 'unlink' } | null;
   onFilter: (status: GuardianLinkStatus | '') => void;
   onPage: (offset: number) => void;
+  onLink: (item: GuardianLinkItem, candidate: GuardianLinkCandidate) => void;
+  onUnlink: (item: GuardianLinkItem) => void;
   onClose: () => void;
 };
 
 /**
- * Fila de promocao responsavel -> cliente (`GET /api/v1/guardians/customer-candidates`).
+ * Fila de promocao responsavel -> cliente (`GET /api/v1/guardians/customer-candidates`) e os botoes que
+ * gravam o par confirmado (`PATCH /guardians/:id` com `{ customerId, isVerified }`).
  *
- * Somente leitura de proposito: o vinculo continua sendo decisao humana, porque o `PATCH
- * /guardians/:id` que grava `customerId` recusa cliente que nao paga acordo do aluno
- * (`customer_not_payer`). A tela encurta a decisao, nao a substitui.
+ * O vinculo continua sendo decisao humana e a trava e do servidor: `customer_not_payer` recusa cliente
+ * que nao paga acordo do aluno e `catalog:write` barra o viewer. A tela so encurta a decisao - `single`
+ * confirma em um clique, `ambiguous` obriga a escolher o pagador certo entre os listados antes de
+ * confirmar, porque duas linhas de pagador com o mesmo nome podem ser a mesma pessoa repetida por
+ * acordo (e ai o `agreements` e o desempate).
+ *
+ * Desvincular exige dois toques: o primeiro arma o botao, o segundo grava. Um clique sozinho derrubaria
+ * um vinculo auditado por engano, e o custo de refazer (procurar o pagador de novo) e maior que o de
+ * confirmar.
  */
-function GuardianLinkPanel({ queue, loading, status, onFilter, onPage, onClose }: GuardianLinkPanelProps) {
+function GuardianLinkPanel({ queue, loading, status, busy, onFilter, onPage, onLink, onUnlink, onClose }: GuardianLinkPanelProps) {
   const styles = useStyles();
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const [confirming, setConfirming] = useState<string | null>(null);
+  /** Rotulo do botao da linha enquanto o `PATCH` dela esta em voo. */
+  const busyLabel = (guardianId: string, idle: string) =>
+    busy?.guardianId === guardianId ? (busy.action === 'link' ? 'Vinculando...' : 'Desvinculando...') : idle;
   const total = GUARDIAN_LINK_ORDER.reduce((sum, value) => sum + queue.counts[value], 0);
   const last = queue.offset + queue.items.length;
   return (
@@ -243,7 +330,7 @@ function GuardianLinkPanel({ queue, loading, status, onFilter, onPage, onClose }
       </div>
       <p className={styles.linkHint}>
         Cada linha é um responsável e os pagadores dos acordos do aluno dele. Nome igual é indício, não vínculo:
-        a promoção a cliente continua sendo uma decisão do operador.
+        o botão grava o par que você confirmou e o servidor recusa cliente que não paga acordo do aluno.
       </p>
       <div className={styles.chips}>
         <Button size="small" appearance={status === '' ? 'primary' : 'secondary'} onClick={() => onFilter('')}>
@@ -273,16 +360,67 @@ function GuardianLinkPanel({ queue, loading, status, onFilter, onPage, onClose }
             <p className={styles.linkMeta}>
               {queue.titles[item.status]} · {item.payers === 1 ? '1 pagador' : `${item.payers} pagadores`} nos acordos
             </p>
-            {item.linkedCustomerId && <p className={styles.linkMeta}>Já vinculado ao cliente {item.linkedCustomerId}</p>}
+            {item.linkedCustomerId && (
+              <div className={styles.linkRow}>
+                <p className={styles.linkMeta}>Já vinculado ao cliente {item.linkedCustomerId}</p>
+                <Button
+                  size="small"
+                  appearance={confirming === item.guardianId ? 'primary' : 'secondary'}
+                  disabled={busy !== null}
+                  onClick={() => {
+                    if (confirming === item.guardianId) {
+                      setConfirming(null);
+                      onUnlink(item);
+                      return;
+                    }
+                    setConfirming(item.guardianId);
+                  }}
+                >
+                  {busyLabel(item.guardianId, confirming === item.guardianId ? 'Confirmar desvínculo' : 'Desvincular')}
+                </Button>
+              </div>
+            )}
             {item.candidates.length > 0 && (
               <ul className={styles.linkCandidates}>
                 {item.candidates.map((candidate) => (
-                  <li key={candidate.customerId}>
-                    {candidate.fullName} — {candidate.agreements === 1 ? '1 acordo pago' : `${candidate.agreements} acordos pagos`}
-                    {candidate.legacyId ? ` · legado ${candidate.legacyTable} #${candidate.legacyId}` : ''}
+                  <li key={candidate.customerId} className={styles.linkCandidate}>
+                    <span>
+                      {candidate.fullName} — {candidate.agreements === 1 ? '1 acordo pago' : `${candidate.agreements} acordos pagos`}
+                      {candidate.legacyId ? ` · legado ${candidate.legacyTable} #${candidate.legacyId}` : ''}
+                    </span>
+                    {item.status === 'single' && (
+                      <Button size="small" appearance="primary" disabled={busy !== null} onClick={() => onLink(item, candidate)}>
+                        {busyLabel(item.guardianId, 'Vincular')}
+                      </Button>
+                    )}
+                    {item.status === 'ambiguous' && (
+                      <Button
+                        size="small"
+                        appearance={picked[item.guardianId] === candidate.customerId ? 'primary' : 'subtle'}
+                        disabled={busy !== null}
+                        onClick={() => setPicked((current) => ({ ...current, [item.guardianId]: candidate.customerId }))}
+                      >
+                        {picked[item.guardianId] === candidate.customerId ? 'Selecionado' : 'Selecionar'}
+                      </Button>
+                    )}
                   </li>
                 ))}
               </ul>
+            )}
+            {item.status === 'ambiguous' && item.candidates.length > 0 && (
+              <div className={styles.linkActions}>
+                <Button
+                  size="small"
+                  appearance="primary"
+                  disabled={busy !== null || !picked[item.guardianId]}
+                  onClick={() => {
+                    const candidate = item.candidates.find((value) => value.customerId === picked[item.guardianId]);
+                    if (candidate) onLink(item, candidate);
+                  }}
+                >
+                  {busyLabel(item.guardianId, 'Vincular selecionado')}
+                </Button>
+              </div>
             )}
           </li>
         ))}
