@@ -932,4 +932,202 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
       expect(invalidId.statusCode).toBe(400);
     });
   });
+
+  describe('conciliacao pos-corte', () => {
+    interface ReportCheck {
+      key: string;
+      title: string;
+      status: 'ok' | 'divergent';
+      divergent: number;
+      deltaAmount?: string;
+      entities?: { entity: string; totalRows: number; withoutProvenance?: number; unresolvedLegacyKeys?: number }[];
+    }
+    interface Report {
+      ok: boolean;
+      divergent: number;
+      checks: ReportCheck[];
+      coverage: { entity: string; canonicalRows: number; stagedRows: number; pendingCanonicalKeys: number }[];
+    }
+
+    const reportOf = async (headers: Record<string, string>): Promise<Report> => {
+      const response = await app.inject({ method: 'GET', url: '/api/v1/reconciliation/post-load', headers });
+      expect({ status: response.statusCode }).toEqual({ status: 200 });
+      return response.json() as Report;
+    };
+    const checkOf = (report: Report, key: string): ReportCheck => {
+      const found = report.checks.find((check) => check.key === key);
+      if (!found) throw new Error(`check ${key} missing from report`);
+      return found;
+    };
+
+    /**
+     * O schema e compartilhado pelos testes anteriores, que ja criam linhas sem proveniencia e
+     * acordos incompletos. Por isso as assercoes sao sempre **relativas** ao relatorio lido antes.
+     */
+    it('exige autenticacao e devolve as quatro verificacoes com a cobertura', async () => {
+      const unauthorized = await app.inject({ method: 'GET', url: '/api/v1/reconciliation/post-load' });
+      expect(unauthorized.statusCode).toBe(401);
+
+      const viewer = { authorization: `Bearer ${await accessTokenOf('viewer@example.com')}` };
+      const report = await reportOf(viewer);
+      expect(report.checks.map((check) => check.key)).toEqual([
+        'legacy_provenance',
+        'legacy_key_resolves',
+        'agreement_total',
+        'agreement_installments'
+      ]);
+      for (const check of report.checks) {
+        expect(check.title.length).toBeGreaterThan(0);
+        expect(['ok', 'divergent']).toContain(check.status);
+        expect(check.divergent).toBeGreaterThanOrEqual(0);
+      }
+      expect(report.coverage.map((row) => row.entity)).toEqual([
+        'schools',
+        'customers',
+        'students',
+        'guardians',
+        'contacts',
+        'student_contacts',
+        'agreements',
+        'installments'
+      ]);
+      for (const row of report.coverage) {
+        expect(row.canonicalRows).toBeGreaterThanOrEqual(0);
+        expect(row.stagedRows).toBeGreaterThanOrEqual(0);
+        expect(row.pendingCanonicalKeys).toBeGreaterThanOrEqual(0);
+      }
+      expect(report.ok).toBe(report.divergent === 0);
+    });
+
+    it('acusa a linha canonica sem proveniencia e lista no detalhe', async () => {
+      const admin = { authorization: `Bearer ${await accessTokenOf('admin@example.com')}` };
+      const before = checkOf(await reportOf(admin), 'legacy_provenance');
+
+      const inserted = await pool.query<{ id: string }>(
+        "INSERT INTO schools (legal_name) VALUES ('Colegio sem proveniencia') RETURNING id"
+      );
+      const schoolId = inserted.rows[0]!.id;
+
+      const after = checkOf(await reportOf(admin), 'legacy_provenance');
+      expect(after.divergent).toBe(before.divergent + 1);
+      expect(after.status).toBe('divergent');
+
+      const detail = await app.inject({
+        method: 'GET', url: '/api/v1/reconciliation/post-load/legacy_provenance?limit=5', headers: admin
+      });
+      expect(detail.statusCode).toBe(200);
+      const items = (detail.json() as { items: { entity: string; id: string }[] }).items;
+      expect(items[0]).toMatchObject({ entity: 'schools', id: schoolId });
+    });
+
+    it('acusa chave legada que nao resolve no staging e aceita a que resolve', async () => {
+      const admin = { authorization: `Bearer ${await accessTokenOf('admin@example.com')}` };
+      const before = checkOf(await reportOf(admin), 'legacy_key_resolves');
+
+      const orphanKey = `ORFAO-${randomUUID()}`;
+      await pool.query(
+        `INSERT INTO customers (full_name, legacy_source, legacy_table, legacy_id)
+         VALUES ($1, 'powerapps-voa', 'TBL_CLIENTE', $2)`,
+        ['Cliente com chave orfa', orphanKey]
+      );
+
+      expect(checkOf(await reportOf(admin), 'legacy_key_resolves').divergent).toBe(before.divergent + 1);
+
+      const detail = await app.inject({
+        method: 'GET', url: '/api/v1/reconciliation/post-load/legacy_key_resolves?limit=5', headers: admin
+      });
+      expect(detail.statusCode).toBe(200);
+      expect((detail.json() as { items: { legacyTable: string; legacyId: string }[] }).items[0]).toMatchObject({
+        legacyTable: 'TBL_CLIENTE',
+        legacyId: orphanKey
+      });
+
+      // A mesma chave, agora presente no staging: a linha deixa de ser divergencia.
+      const batch = await pool.query<{ id: string }>(
+        `INSERT INTO migration_batches (source_name, source_hash, source_kind, status)
+         VALUES ($1, $2, 'xlsx', 'staging') RETURNING id`,
+        [`fonte conciliacao ${randomUUID()}`, createHash('sha256').update(orphanKey).digest('hex')]
+      );
+      await pool.query(
+        `INSERT INTO migration_rows (batch_id, source_sheet, source_row_number, legacy_table, legacy_id, row_hash, payload)
+         VALUES ($1, 'TBL_CLIENTE', 1, 'TBL_CLIENTE', $2, $3, '{}'::jsonb)`,
+        [batch.rows[0]!.id, orphanKey, createHash('sha256').update(`row-${orphanKey}`).digest('hex')]
+      );
+
+      expect(checkOf(await reportOf(admin), 'legacy_key_resolves').divergent).toBe(before.divergent);
+    });
+
+    it('acusa acordo com total diferente da soma e acordo com contagem errada', async () => {
+      const admin = { authorization: `Bearer ${await accessTokenOf('admin@example.com')}` };
+      const before = await reportOf(admin);
+      const beforeTotal = checkOf(before, 'agreement_total');
+      const beforeCount = checkOf(before, 'agreement_installments');
+
+      const school = await pool.query<{ id: string }>("INSERT INTO schools (legal_name) VALUES ('Colegio conciliacao') RETURNING id");
+      const customer = await pool.query<{ id: string }>("INSERT INTO customers (full_name) VALUES ('Cliente conciliacao') RETURNING id");
+      const schoolId = school.rows[0]!.id;
+      const customerId = customer.rows[0]!.id;
+
+      // Total 100 com uma parcela de 40: a contagem (1) bate, o valor nao.
+      const divergingTotal = await pool.query<{ id: string }>(
+        'INSERT INTO agreements (school_id, customer_id, total_amount, installments_count) VALUES ($1, $2, 100, 1) RETURNING id',
+        [schoolId, customerId]
+      );
+      await pool.query(
+        "INSERT INTO installments (agreement_id, installment_number, due_date, original_amount) VALUES ($1, 1, '2026-10-10', 40)",
+        [divergingTotal.rows[0]!.id]
+      );
+
+      // Total 40 com uma parcela de 40 e duas previstas: o valor bate, a contagem nao.
+      const divergingCount = await pool.query<{ id: string }>(
+        'INSERT INTO agreements (school_id, customer_id, total_amount, installments_count) VALUES ($1, $2, 40, 2) RETURNING id',
+        [schoolId, customerId]
+      );
+      await pool.query(
+        "INSERT INTO installments (agreement_id, installment_number, due_date, original_amount) VALUES ($1, 1, '2026-10-10', 40)",
+        [divergingCount.rows[0]!.id]
+      );
+
+      const after = await reportOf(admin);
+      expect(checkOf(after, 'agreement_total').divergent).toBe(beforeTotal.divergent + 1);
+      expect(checkOf(after, 'agreement_installments').divergent).toBe(beforeCount.divergent + 1);
+      expect(Number(checkOf(after, 'agreement_total').deltaAmount)).not.toBe(0);
+      expect(after.ok).toBe(false);
+      expect(after.divergent).toBe(after.checks.reduce((total, check) => total + check.divergent, 0));
+
+      const totals = await app.inject({
+        method: 'GET', url: '/api/v1/reconciliation/post-load/agreement_total?limit=50', headers: admin
+      });
+      expect(totals.statusCode).toBe(200);
+      const totalItems = (totals.json() as { items: { id: string; delta: string; installmentsTotal: string }[] }).items;
+      expect(totalItems.find((item) => item.id === divergingTotal.rows[0]!.id)).toMatchObject({
+        installmentsTotal: '40.00',
+        delta: '-60.00'
+      });
+
+      const counts = await app.inject({
+        method: 'GET', url: '/api/v1/reconciliation/post-load/agreement_installments?limit=50', headers: admin
+      });
+      expect(counts.statusCode).toBe(200);
+      const countItems = (counts.json() as { items: { id: string; installmentsCount: number; installments: number }[] }).items;
+      expect(countItems.find((item) => item.id === divergingCount.rows[0]!.id)).toMatchObject({
+        installmentsCount: 2,
+        installments: 1
+      });
+    });
+
+    it('recusa verificacao desconhecida e normaliza o limite do detalhe', async () => {
+      const admin = { authorization: `Bearer ${await accessTokenOf('admin@example.com')}` };
+      const invalid = await app.inject({ method: 'GET', url: '/api/v1/reconciliation/post-load/payment_drift', headers: admin });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json()).toMatchObject({ code: 'INVALID_REQUEST' });
+
+      const clamped = await app.inject({
+        method: 'GET', url: '/api/v1/reconciliation/post-load/legacy_provenance?limit=9999', headers: admin
+      });
+      expect(clamped.statusCode).toBe(200);
+      expect(clamped.json()).toMatchObject({ limit: 200, check: 'legacy_provenance' });
+    });
+  });
+
 });

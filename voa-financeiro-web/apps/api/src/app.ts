@@ -42,6 +42,26 @@ import {
   resolveFinding,
   sealBatch
 } from './db/migration-batches.js';
+import {
+  CHECK_TITLES,
+  RECONCILIATION_CHECKS,
+  classify,
+  isReconciliationCheck,
+  parseDetailLimit,
+  summarize,
+  type CheckOutcome
+} from './domain/reconciliation.js';
+import {
+  listAgreementInstallmentDivergences,
+  listAgreementTotalDivergences,
+  listProvenanceGaps,
+  listUnresolvedLegacyKeys,
+  loadAgreementInstallmentDivergence,
+  loadAgreementTotalDivergence,
+  loadCoverage,
+  loadProvenance,
+  loadUnresolvedLegacyKeys
+} from './db/reconciliation-post-load.js';
 
 const loginSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -751,6 +771,102 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       });
     }
     return reply.code(200).send({ ...outcome.finding, duplicate: outcome.status === 'already_resolved' });
+  });
+
+  // -----------------------------------------------------------------------------------------------
+  // Conciliacao pos-corte (somente leitura).
+  //
+  // Confere o que ficou **gravado** depois da carga: proveniencia legada, chave legada resolvendo no
+  // staging e as duas somas do acordo. Nao corrige nada - a correcao continua sendo uma rodada da
+  // carga (`--commit`) ou do backfill, com decisao explicita do operador.
+  //
+  // `payments` e `users` ficam fora da proveniencia de proposito: o primeiro nao tem colunas
+  // `legacy_*` (nasce da aplicacao e do webhook Asaas) e o segundo e criado por `auth:create-admin`.
+  // -----------------------------------------------------------------------------------------------
+
+  /**
+   * Relatorio completo: as quatro verificacoes + a cobertura por entidade.
+   *
+   * `ok` so e `true` quando as quatro estao zeradas. A cobertura vem junto porque o operador precisa
+   * comparar a rodada com a anterior (`stagedRows` x `canonicalRows` x `pendingCanonicalKeys`), nao
+   * porque ela seja um gate.
+   */
+  app.get('/api/v1/reconciliation/post-load', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const [provenance, unresolved, agreementTotal, agreementInstallments, coverage] = await Promise.all([
+      loadProvenance(pool),
+      loadUnresolvedLegacyKeys(pool),
+      loadAgreementTotalDivergence(pool),
+      loadAgreementInstallmentDivergence(pool),
+      loadCoverage(pool)
+    ]);
+    const withoutProvenance = provenance.reduce((total, row) => total + row.withoutProvenance, 0);
+    const unresolvedKeys = unresolved.reduce((total, row) => total + row.unresolvedLegacyKeys, 0);
+    const outcomes = [
+      { key: 'legacy_provenance', divergent: withoutProvenance },
+      { key: 'legacy_key_resolves', divergent: unresolvedKeys },
+      { key: 'agreement_total', divergent: agreementTotal.divergent },
+      { key: 'agreement_installments', divergent: agreementInstallments }
+    ] satisfies CheckOutcome[];
+    const summary = summarize(outcomes);
+    const checks = [
+      {
+        key: 'legacy_provenance' as const,
+        title: CHECK_TITLES.legacy_provenance,
+        status: classify(withoutProvenance),
+        divergent: withoutProvenance,
+        entities: provenance
+      },
+      {
+        key: 'legacy_key_resolves' as const,
+        title: CHECK_TITLES.legacy_key_resolves,
+        status: classify(unresolvedKeys),
+        divergent: unresolvedKeys,
+        entities: unresolved
+      },
+      {
+        key: 'agreement_total' as const,
+        title: CHECK_TITLES.agreement_total,
+        status: classify(agreementTotal.divergent),
+        divergent: agreementTotal.divergent,
+        deltaAmount: agreementTotal.deltaAmount ?? '0.00'
+      },
+      {
+        key: 'agreement_installments' as const,
+        title: CHECK_TITLES.agreement_installments,
+        status: classify(agreementInstallments),
+        divergent: agreementInstallments
+      }
+    ];
+    return { generatedAt: new Date().toISOString(), ...summary, checks, coverage };
+  });
+
+  /**
+   * Detalhe (paginado por `limit`, no maximo 200) das linhas que sobraram em uma verificacao.
+   *
+   * O detalhe e recalculado a cada chamada: nao ha snapshot guardado, entao o numero do detalhe
+   * sempre concorda com o do relatorio no mesmo instante.
+   */
+  app.get('/api/v1/reconciliation/post-load/:check', { preHandler: requireAuthentication }, async (request, reply) => {
+    const { check } = request.params as { check: string };
+    if (!isReconciliationCheck(check)) {
+      return reply.code(400).send({
+        code: 'INVALID_REQUEST',
+        message: `check must be one of ${RECONCILIATION_CHECKS.join(', ')}`,
+        correlationId: request.id
+      });
+    }
+    const limit = parseDetailLimit((request.query as { limit?: string }).limit);
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const items =
+      check === 'legacy_provenance'
+        ? await listProvenanceGaps(pool, limit)
+        : check === 'legacy_key_resolves'
+          ? await listUnresolvedLegacyKeys(pool, limit)
+          : check === 'agreement_total'
+            ? await listAgreementTotalDivergences(pool, limit)
+            : await listAgreementInstallmentDivergences(pool, limit);
+    return { check, title: CHECK_TITLES[check], limit, items };
   });
 
   app.post('/api/v1/auth/login', async (request, reply) => {

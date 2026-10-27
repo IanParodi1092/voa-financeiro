@@ -20,6 +20,7 @@ Todas as rotas de dominio sao versionadas sob `/api/v1`. Observabilidade, identi
   `PATCH /api/v1/agreements|installments|payments/:id` (`finance:write`)
 - `POST /api/v1/migrations/batches` e `GET /api/v1/migrations/batches[/:id]` (`migration:write` / `read`)
 - `POST /api/v1/migrations/batches/:id/validate|commit` e `POST /api/v1/migrations/errors/:id/resolve` (`migration:write`), com `GET /api/v1/migrations/batches/:id/errors` (`read`)
+- `GET /api/v1/reconciliation/post-load[/:check]` - conciliacao pos-corte somente leitura (ver a secao propria)
 - `GET /api/v1/audit-logs` (somente `admin`)
 - `POST /api/v1/webhooks/asaas` (exige o token `ASAAS_WEBHOOK_TOKEN`)
 
@@ -115,6 +116,32 @@ O `commit` fecha o lote, **nao** carrega dado: a carga continua em
 `npm run db:load-canonical-commit`. Cada transicao grava `migration.batch.registered`,
 `migration.batch.validated`, `migration.batch.committed` ou `migration.finding.resolved` em
 `audit_logs`.
+
+## Conciliacao pos-corte
+
+Leitura pura (`read`, qualquer papel autenticado): confere o que a carga **deixou gravado**, sem
+corrigir nada e sem guardar snapshot.
+
+- `GET /api/v1/reconciliation/post-load` - as quatro verificacoes + a cobertura por entidade;
+- `GET /api/v1/reconciliation/post-load/:check` - detalhe paginado (`limit`, teto de 200).
+
+| Verificacao | O que compara | Esperado |
+|---|---|---|
+| `legacy_provenance` | linhas de `schools`, `customers`, `students`, `guardians`, `contacts`, `student_contacts`, `agreements` e `installments` com `legacy_source` nulo | 0 |
+| `legacy_key_resolves` | linhas canonicas cuja chave `(legacy_table, legacy_id)` nao existe em `migration_rows` | 0 |
+| `agreement_total` | `agreements.total_amount` x soma de `installments.original_amount` (tolerancia de meio centavo) | 0 |
+| `agreement_installments` | `agreements.installments_count` x parcelas gravadas | 0 |
+
+`payments` fica fora da proveniencia porque nao tem colunas `legacy_*` (nasce da aplicacao e do
+webhook Asaas; a reconciliacao dele e por `external_id`), e `users` fica fora porque e criado por
+`auth:create-admin` - usuario sem `legacy_source` e o esperado. A cobertura (`canonicalRows`,
+`stagedRows`, `pendingCanonicalKeys`) e **informativa**: `pendingCanonicalKeys` conta linhas
+estagiadas que o dicionario descartou ou adiou de proposito, nao uma divergencia.
+
+| Situacao | Status | `code` |
+|---|---|---|
+| verificacao fora das quatro declaradas | 400 | `INVALID_REQUEST` |
+| qualquer divergencia encontrada | 200 | corpo com `ok: false`, `divergent` e o item por verificacao |
 
 ## Permissoes (RBAC)
 

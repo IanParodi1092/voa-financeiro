@@ -702,8 +702,44 @@ uma tabela referenciada, com fallback para a ordem por tabela primaria quando ha
 
 O Supabase carrega 3 linhas sem proveniencia (criadas fora da migracao) e uma divergencia de
 **R$ 1.362,48** entre `agreements.total_amount` e `installments.original_amount`; o ensaio local fecha
-exatamente. Liberado o disco, a recomendacao e reaplicar a revisao no Supabase (ou reconciliar as 3
-linhas e os 24 contatos) antes do cutover - a decisao e do operador.
+exatamente. Com o Supabase fora do escopo desde 2026-10-27, o que importa e o canonico local - e ele
+agora tem uma rota propria para conferir isso a qualquer momento:
+
+#### Conciliacao pos-corte pela API (2026-10-27)
+
+`GET /api/v1/reconciliation/post-load` (e `.../:check` para o detalhe) roda as quatro verificacoes
+descritas em `docs/API_ROUTES.md` direto no banco. Medicao no canonico local, apos a carga:
+
+| Verificacao | Resultado local |
+|---|---:|
+| `legacy_provenance` (8 entidades, 150.018 linhas) | 0 |
+| `legacy_key_resolves` | 0 |
+| `agreement_total` | 0 (delta `0.00`) |
+| `agreement_installments` | 0 |
+
+Cobertura informativa da mesma rodada (`canonico` x `estagiado` x `pendente`):
+
+| Entidade | Canonicas | Estagiadas | Sem linha canonica |
+|---|---:|---:|---:|
+| `schools` | 75 | 75 | 0 |
+| `customers` | 26.264 | 26.268 | 4 |
+| `students` | 6.641 | 6.652 | 11 |
+| `guardians` | 6.347 | 6.652 | 305 |
+| `contacts` | 46.829 | 54.782 | 7.953 |
+| `student_contacts` | 38.962 | 47.562 | 8.600 |
+| `agreements` | 1.505 | 1.572 | 67 |
+| `installments` | 15.259 | 15.535 | 276 |
+
+Nenhum desses numeros e divergencia: sao as linhas que o dicionario descartou ou adiou. As 7.953 de
+`contacts` sao `TBL_CLIENTEENDTEL` fora da politica de carga; as 305 de `guardians` sao 294 alunos
+carregados sem `Aluno.Responsavel_Financeiro` preenchido mais os 11 alunos que nao entraram no
+canonico (medido: 6.641 alunos, 294 sem guardiao). Eles servem para comparar rodadas - quando uma
+linha entra no canonico, a coluna `pendente` cai na mesma proporcao.
+
+A primeira versao da consulta de `legacy_key_resolves` levava **1,3 s** porque usava
+`count(*) FILTER (WHERE NOT EXISTS ...)`; com o `NOT EXISTS` no `WHERE` o planner monta um *hash anti
+join* e o relatorio inteiro cai para ~250 ms. O comentario esta no modulo
+(`apps/api/src/db/reconciliation-post-load.ts`) para a regressao nao voltar.
 
 ## Pendencias de entrada ainda abertas
 
