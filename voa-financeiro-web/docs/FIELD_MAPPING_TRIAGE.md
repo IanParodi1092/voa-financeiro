@@ -107,6 +107,8 @@ O que decide a politica nao e o volume, e o estado do lado canonico:
 4. **O caminho sem CPF tambem e parcial.** 1.153 alunos (17,4%) tem ao menos um acordo com cliente resolvido - esse vinculo ja esta no canonico via `agreements.student_id` + `agreements.customer_id`, e 245 desses alunos tem 2+ clientes distintos entre acordos (o mesmo aluno virou clientes diferentes por variacao de grafia no pagamento). Os 5.488 alunos restantes nao tem lado financeiro carregado.
 5. **O responsavel e uma pessoa, nao um cliente comercial.** No Dataverse (`_legacy-powerapps/.../DataSources/TBL_ALUNO.json`) o responsavel tem `cr04f_cpfdoresponsavel`, `cr04f_rgdoresponsavel`, `cr04f_profissaodoresponsavel`, `cr04f_estadocivildoresponsavel` e `cr04f_telefonedoaluno`; o canonico nao tem entidade de guardiao - `customers` e a tabela de quem paga contrato/escola, e o contato do aluno continua sem destino (`students_contact`, classe D).
 
+**Decisao (2026-10-27):** as duas colunas continuam em `review` e nao entram na carga - nenhuma linha muda, nenhum cliente novo nasce e `students.customer_id` segue vazio. O vinculo do responsavel reabre quando a `0010` criar `guardians` junto de `student_contacts`, e ai o destino deixa de ser `customers`. Consultas de reproducao em `## Reproducao das consultas`.
+
 ## Classe D - exigem migration nova (6)
 
 | Aba | Coluna | Gap | Volume no lote | O que a migration precisa |
@@ -142,11 +144,11 @@ Proposta: `defer: address_not_modeled`, mantendo o gap `schools_contact_address`
 | + A' com `status: "proposed"` | 5 | 6 (5 `review` + 1 `MAPPING_NOT_CONFIRMED`) | exit `2` - **estado atual** |
 | + A' confirmada | 5 | 5 | exit `2` |
 | + `agreements_closed_at`, contato de aluno e `users.legacy_id` | 2 | 2 | exit `2` |
-| + decisao de identidade da classe C | 0 | 0 | exit `0` |
+| + decisao de identidade da classe C | 2 | 2 | exit `2` - **decidido em 2026-10-27: mantida em `review`** |
 
 Numeros medidos no estado atual: `39 map`, `78 ignore`, `734 defer`, `5 review`, `0` problema estrutural, `0` divergencia de staging; o portao lista 5 `REVIEW_REQUIRED` (`Aluno.Responsavel_Financeiro`, `Aluno.CPFResponsavel`, `ENDTEL_ALUNO_ID`, `Pagamento_DataFechamento`, `TBL_USER.ID`) e 1 `MAPPING_NOT_CONFIRMED` (`TBL_PAGAMENTO.Pagamento_Nome -> agreements.reference`).
 
-O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exige que toda coluna `NOT NULL` sem `default` esteja coberta por `map`/`links`. O portao mede a qualidade do dicionario - e o lote de 2026-09-25 foi carregado com ele ainda fechado. Fechar as classes A, B, E e A' e o que torna o dicionario descritivo do que ja foi carregado; as classes C e D so fecham com trabalho novo (revisao assistida e migration). O que a classe A' muda e a **flag** da carga: `--allow-proposed agreements` enquanto o status for `proposed`.
+O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exige que toda coluna `NOT NULL` sem `default` esteja coberta por `map`/`links`. O portao mede a qualidade do dicionario - e o lote de 2026-09-25 foi carregado com ele ainda fechado. Fechar as classes A, B, E e A' e o que torna o dicionario descritivo do que ja foi carregado; a classe D so fecha com migration (`0010`) e a classe C **fica em `review` por decisao de 2026-10-27**, entao o `exit 2` deixa de ser pendencia aberta e passa a ser o estado esperado: sem o item de classe C o portao nao chega a `0` sem criar `guardians`. O que a classe A' muda e a **flag** da carga: `--allow-proposed agreements` enquanto o status for `proposed`.
 
 ## Como foi aplicado
 
@@ -192,7 +194,7 @@ Exemplo de edicao por classe (linha atual -> proposta):
 2. **Classe A' (`Pagamento_Nome`)** - **aceita** em 2026-10-22 como `map: agreements.reference` com `status: "proposed"`: o rotulo do lote passa a ter destino, mas a carga so o aplica com `--allow-proposed agreements` e o valor so entra em `agreements.reference` numa rodada `--commit --enrich-reused` (o `UPDATE` usa `COALESCE(coluna, %s)`, ou seja, nunca sobrescreve valor existente). Falta o passo final: validar a coluna em tela e remover o `status` para virar `confirmed`, o que tira o `MAPPING_NOT_CONFIRMED` do portao e a flag da carga.
 3. **Classe B (10 colunas)** - **aceita** em 2026-10-22: `TBL_DIVIDA`/`TBL_DIVIDA_LISTAGEM` registradas como fora do canonico (inadimplencia nao modelada) e gap `agreements_source_resolution` reescrito como resolvido. Se um dia dividas entrarem no canonico, o caminho e nova entidade `debts` + `debt_items` e as 10 colunas voltam a `map`.
 4. **Classe E (6 colunas)** - **aceita** em 2026-10-22: `defer: address_not_modeled`. Quando endereco de escola entrar, o caminho e migration de `school_addresses` (com CEP normalizado para 8 digitos); o `defer` de hoje nao impede.
-5. **Classe C (2 colunas)** - **em aberto**: manter bloqueado, criar fluxo de revisao assistida de responsavel financeiro, ou aceitar vinculo automatico por CPF valido (9.000+ linhas) e nome como desempate?
+5. **Classe C (2 colunas)** - **aceita** em 2026-10-27: **mantidas em `review`**, nada muda na carga. O motivo nao e o volume, e o estado do canonico medido no lote `4609c071`: nenhum dos 5.095 CPFs validos existe em `customers` (os 2.138 documentos da tabela sao CNPJ de `TBL_CLIENTE`), o pagador dos 1.505 acordos ja e o proprio aluno (`TBL_PAGAMENTO` nomeia o cliente com `Pagamento.Nome_Aluno`; 1.123 nomes batem com `students.full_name`) e nome nao desempata (111 dos 380 nomes coincidentes casam com 2+ clientes). O auto-vinculo por CPF preencheria `students.customer_id` de 5.560 alunos ao custo de ~5.095 clientes novos que nao sao os que pagam os acordos; a revisao assistida fica sem usuario agora. **Reabre** quando a `0010` criar `guardians` (ou equivalente) junto de `student_contacts`: ai o responsavel deixa de ser candidato a `customers` e passa a ter entidade propria, com CPF/RG/profissao/estado civil/telefone que a origem ja tem (`cr04f_cpfdoresponsavel`, `cr04f_rgdoresponsavel`, `cr04f_profissaodoresponsavel`, `cr04f_estadocivildoresponsavel`, `cr04f_telefonedoaluno`).
 6. **Classe D** - **parcialmente aceita** em 2026-10-22: a migration `0009` saiu so com `installments.legacy_id` + `contacts.legacy_id` (as duas que davam rastreabilidade ao que ja estava carregado). `agreements.closed_at`, `student_contacts` e `users.legacy_id` seguem em aberto; sem elas o portao fica em `2`, mas nada impede a operacao das telas.
 
 ## Reproducao das consultas
@@ -213,4 +215,33 @@ Get-Content "$env:TEMP\triage_probe.sql" | docker exec -i voa-staging psql -U po
 ```
 
 Os volumes por aba e o `no_mapping` de `TBL_DIVIDA` saem de `docs/CANONICAL_LOAD_REPORT.md`; os gaps por coluna saem de `docs/FIELD_MAPPING_DICTIONARY.md`.
+
+### Classe C
+
+A cobertura das duas colunas e a validade do CPF vem do payload do lote; o cruzamento com o canonico sai direto das tabelas:
+
+```sql
+-- cobertura e nomes (o CPF valido/invalido e recalculado no cliente, ver abaixo)
+select count(*) as linhas,
+       count(*) filter (where payload->>'Aluno.Responsavel_Financeiro' is not null) as com_nome,
+       count(*) filter (where payload->>'Aluno.CPFResponsavel' is not null) as com_cpf
+from migration_rows where source_sheet = 'TBL_ALUNO';
+
+-- nenhum CPF em customers: os documentos existentes sao CNPJ de TBL_CLIENTE
+select legacy_table, length(document_number) as digitos, count(*)
+from customers where deleted_at is null and document_number is not null
+group by 1, 2 order by 3 desc;
+
+-- o pagador dos acordos e o aluno: 1.123 nomes batem com students.full_name
+select count(*) from students s where s.deleted_at is null and exists (
+  select 1 from customers c
+  where c.legacy_table = 'TBL_PAGAMENTO'
+    and upper(btrim(c.full_name)) = upper(btrim(s.full_name)));
+
+-- cobertura do vinculo alternativo (pelo acordo ja carregado)
+select count(distinct student_id) from agreements
+where student_id is not null and deleted_at is null;
+```
+
+O digito verificador e a contagem de grafias por CPF usam `is_valid_cpf`/`only_digits` de `scripts/validate_staging_batch.py` sobre `migration_rows` (`source_sheet = 'TBL_ALUNO'`); o resultado de 2026-10-27 esta na tabela da classe C.
 

@@ -122,13 +122,13 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | ID | map | students.legacy_id | legacy_id | trim | sim |  |  |
 | Aluno.Escola.ID | map | students.school_id | reference | trim | sim | schools | resolve schools.legacy_id; 6.651 preenchidos em 72 escolas |
 | Aluno.Nome | map | students.full_name | name | collapse_ws | sim |  |  |
-| Aluno.Responsavel_Financeiro | review |  |  |  |  |  | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so; 380 nomes coincidem com customers.full_name mas 111 casam com 2+ clientes; nome nunca identifica cliente |
+| Aluno.Responsavel_Financeiro | review |  |  |  |  |  | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so; 380 nomes coincidem com customers.full_name mas 111 casam com 2+ clientes; nome nunca identifica cliente; decisao 2026-10-27: mantido em review ate existir entidade guardians (0010) |
 | Aluno.Telefone | defer |  |  |  |  |  | student_contact_not_modeled [gap: students_contact] |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
 | __PowerAppsId__ | ignore |  |  |  |  |  | empty_column |
 | Aluno.Login.ID | defer |  |  |  |  |  | user_link_requires_review |
 | Aluno.UltimoContato | ignore |  |  |  |  |  | 6.560 preenchidos, 688 datas distintas: data derivada do historico de contato |
-| Aluno.CPFResponsavel | review |  |  |  |  |  | 6.644 preenchidos: 5.560 validos, 1.084 invalidos (DOCUMENT_INVALID), 5.095 distintos, 424 compartilhados por 2+ alunos; nenhum CPF existe em customers (2.138 documentos sao CNPJ de TBL_CLIENTE), entao nao vincula customers sem decisao |
+| Aluno.CPFResponsavel | review |  |  |  |  |  | 6.644 preenchidos: 5.560 validos, 1.084 invalidos (DOCUMENT_INVALID), 5.095 distintos, 424 compartilhados por 2+ alunos; nenhum CPF existe em customers (2.138 documentos sao CNPJ de TBL_CLIENTE), entao nao vincula customers sem decisao; decisao 2026-10-27: mantido em review ate existir entidade guardians (0010) |
 | Aluno.Endereco | defer |  |  |  |  |  | address_not_modeled [gap: students_contact] |
 | Aluno.Acordo | ignore |  |  |  |  |  | computed_cache |
 | Aluno_Processo | ignore |  |  |  |  |  | computed_cache |
