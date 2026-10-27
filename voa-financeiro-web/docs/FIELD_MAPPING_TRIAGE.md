@@ -34,7 +34,7 @@ Por que o historico de cobranca nao entra: o valor financeiro do legado ja esta 
 
 Reabrir qualquer uma das tres exige apenas editar `scripts/legacy_field_map.json` e rodar o portao; o plano de carga ja sabe lidar com `asaas_charges` bloqueada (`required_columns_uncovered`) se o mapa voltar sem as cinco colunas obrigatorias.
 
-
+## Resumo por classe
 
 | Classe | Itens | O que e | Decisao | Status |
 |---|---:|---|---|---|
