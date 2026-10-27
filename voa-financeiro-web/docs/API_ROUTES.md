@@ -14,6 +14,7 @@ Todas as rotas de dominio sao versionadas sob `/api/v1`. Observabilidade, identi
 - `GET /api/v1/students/:studentId/guardians` e `GET /api/v1/students/:studentId/contacts` - responsavel
   (`guardians`, migration `0011`) e contatos do aluno (`student_contacts`, `0010` + `0011`); um id de aluno
   malformado responde `400` mesmo sem banco
+- `GET /api/v1/guardians/customer-candidates` - fila de promocao responsavel -> cliente (ver a secao propria)
 - `GET/POST /api/v1/agreements`, `GET/POST /api/v1/installments`, `GET/POST /api/v1/payments`
 - `GET /api/v1/schools/:schoolId/retention`
 - `PATCH /api/v1/schools|customers|students|guardians|student-contacts/:id` (`catalog:write`) e
@@ -69,7 +70,10 @@ Campos com regra propria:
   coluna **nao** e preenchida pela migracao (`Pagamento_DataFechamento` ficou `defer`, ver
   `docs/FIELD_MAPPING_TRIAGE.md`).
 - `guardians.customerId`: promocao assistida do responsavel a cliente pagador (o loader sempre deixa
-  `null`); `null` desfaz o vinculo. E a trilha de conciliacao guardiao <-> cliente.
+  `null`); `null` desfaz o vinculo. E a trilha de conciliacao guardiao <-> cliente. O `PATCH`
+  **recusa** (`409 CUSTOMER_NOT_PAYER`) um cliente que nao pague nenhum acordo do aluno do guardiao:
+  dos 26.264 clientes, 24.696 sao escolas/empresas de `TBL_CLIENTE`, e promover um responsavel a
+  escola nao e conciliacao. Um id inexistente responde `400 INVALID_REFERENCE`.
 - `studentContacts.type`: `phone`, `email`, `address` ou `other` (os tres primeiros sao os rotulos que
   o legado carrega); `studentContacts.status`: `active` ou `inactive` (preserva os 5.695 contatos
   `DESATIVADO` sem apagar linha).
@@ -122,7 +126,7 @@ O `commit` fecha o lote, **nao** carrega dado: a carga continua em
 Leitura pura (`read`, qualquer papel autenticado): confere o que a carga **deixou gravado**, sem
 corrigir nada e sem guardar snapshot.
 
-- `GET /api/v1/reconciliation/post-load` - as quatro verificacoes + a cobertura por entidade;
+- `GET /api/v1/reconciliation/post-load` - as cinco verificacoes + a cobertura por entidade;
 - `GET /api/v1/reconciliation/post-load/:check` - detalhe paginado (`limit`, teto de 200).
 
 | Verificacao | O que compara | Esperado |
@@ -131,6 +135,7 @@ corrigir nada e sem guardar snapshot.
 | `legacy_key_resolves` | linhas canonicas cuja chave `(legacy_table, legacy_id)` nao existe em `migration_rows` | 0 |
 | `agreement_total` | `agreements.total_amount` x soma de `installments.original_amount` (tolerancia de meio centavo) | 0 |
 | `agreement_installments` | `agreements.installments_count` x parcelas gravadas | 0 |
+| `guardian_customer_link` | `guardians.customer_id` de cliente que nao paga nenhum acordo do aluno | 0 |
 
 `payments` fica fora da proveniencia porque nao tem colunas `legacy_*` (nasce da aplicacao e do
 webhook Asaas; a reconciliacao dele e por `external_id`), e `users` fica fora porque e criado por
@@ -140,8 +145,46 @@ estagiadas que o dicionario descartou ou adiou de proposito, nao uma divergencia
 
 | Situacao | Status | `code` |
 |---|---|---|
-| verificacao fora das quatro declaradas | 400 | `INVALID_REQUEST` |
+| verificacao fora das cinco declaradas | 400 | `INVALID_REQUEST` |
 | qualquer divergencia encontrada | 200 | corpo com `ok: false`, `divergent` e o item por verificacao |
+
+## Promocao responsavel -> cliente
+
+A `0011` nasceu com `guardians.customer_id` nulo porque **nome do legado nunca vira cliente**. Esta
+secao e o caminho assistido para uma pessoa decidir o vinculo, e nao uma regra que o decida.
+
+- `GET /api/v1/guardians/customer-candidates` (`read`, qualquer papel autenticado) - fila dos 6.347
+  guardioes, com `status`, `limit` (teto 200) e `offset`;
+- `PATCH /api/v1/guardians/:id` com `customerId` (`catalog:write`) - grava o vinculo confirmado.
+
+O universo de candidatos **nao** e a tabela `customers`: e `agreements.customer_id` do aluno do
+guardiao. Dos 26.264 clientes, 24.696 vem de `TBL_CLIENTE` e sao escolas/empresas (CNPJ); os 1.568
+restantes sao o pagador sintetizado de `TBL_PAGAMENTO`. Comparar nome de pessoa com razao social so
+produziria ruido, e a comparacao de CPF nunca casa: os guardioes tem CPF (11 digitos) e os clientes
+de `TBL_CLIENTE` tem CNPJ (14).
+
+| `status` | Significado | Guardioes (canonico local, 2026-10-27) |
+|---|---|---|
+| `single` | um unico pagador do aluno tem o nome do responsavel | 274 |
+| `ambiguous` | duas ou mais linhas de pagador com esse nome (a mesma pessoa repetida por acordo) | 102 |
+| `no_match` | o aluno tem pagador, mas com outro nome (em geral o proprio aluno) | 774 |
+| `no_payer` | o aluno nao tem acordo com pagador | 5.197 |
+| `linked` | `customer_id` ja preenchido | 0 |
+
+Nome e comparado no banco: `translate` (acento -> ASCII) -> `lower` -> espacos colapsados ->
+`btrim`. A ordem importa porque o banco local roda em collation `C`, onde `lower('É')` nao rebaixa
+nada; `JOSÉ DA SILVA` e `José da Silva` casam, e o teste de integracao cobre os dois.
+
+| Situacao | Status | `code` |
+|---|---|---|
+| `status` desconhecido no query | 400 | `INVALID_REQUEST` |
+| `customerId` que nao paga acordo do aluno | 409 | `CUSTOMER_NOT_PAYER` |
+| `customerId` inexistente ou soft-deleted | 400 | `INVALID_REFERENCE` |
+| guardiao inexistente | 404 | `NOT_FOUND` |
+
+Vincular **nao** marca `isVerified` sozinho: o corpo do PATCH envia os dois campos quando a tela
+confirma o par (`{ "customerId": "...", "isVerified": true }`), e `customerId: null` desfaz. Um
+vinculo gravado por fora da API aparece na quinta verificacao do relatorio pos-corte.
 
 ## Permissoes (RBAC)
 

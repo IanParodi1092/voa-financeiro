@@ -56,7 +56,8 @@ export const RECONCILIATION_CHECKS = [
   'legacy_provenance',
   'legacy_key_resolves',
   'agreement_total',
-  'agreement_installments'
+  'agreement_installments',
+  'guardian_customer_link'
 ] as const;
 
 export type ReconciliationCheck = (typeof RECONCILIATION_CHECKS)[number];
@@ -66,7 +67,8 @@ export const CHECK_TITLES: Record<ReconciliationCheck, string> = {
   legacy_provenance: 'Linhas canonicas sem proveniencia legada',
   legacy_key_resolves: 'Chave legada da linha canonica ausente no staging',
   agreement_total: 'Acordo com total diferente da soma das parcelas',
-  agreement_installments: 'Acordo com installments_count diferente das parcelas gravadas'
+  agreement_installments: 'Acordo com installments_count diferente das parcelas gravadas',
+  guardian_customer_link: 'Responsavel vinculado a cliente que nao paga acordo do aluno'
 };
 
 export type CheckStatus = 'ok' | 'divergent';
@@ -86,7 +88,7 @@ export interface CheckOutcome {
   divergent: number;
 }
 
-/** Resumo do relatorio: `ok` so quando as quatro verificacoes estao zeradas. */
+/** Resumo do relatorio: `ok` so quando todas as verificacoes estao zeradas. */
 export function summarize(outcomes: readonly CheckOutcome[]): { ok: boolean; divergent: number } {
   const divergent = outcomes.reduce((total, outcome) => total + Math.max(0, Number(outcome.divergent) || 0), 0);
   return { ok: divergent === 0, divergent };

@@ -485,6 +485,16 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
       expect(created.statusCode).toBe(201);
       const studentId = (created.json() as { id: string }).id;
 
+      // A promocao exige que o cliente pague acordo **deste** aluno: o fixture de `seedPayment`
+      // cria o acordo sem `studentId`, entao o cenario acrescenta um acordo com o aluno.
+      const payerAgreement = await app.inject({
+        method: 'POST',
+        url: '/api/v1/agreements',
+        headers: finance,
+        payload: { schoolId, customerId, studentId, totalAmount: 100, installmentsCount: 1 }
+      });
+      expect(payerAgreement.statusCode).toBe(201);
+
       // `guardians` e `student_contacts` nascem da migracao, nao de `POST`: o cenario insere direto.
       const guardianId = randomUUID();
       const contactId = randomUUID();
@@ -964,7 +974,7 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
      * O schema e compartilhado pelos testes anteriores, que ja criam linhas sem proveniencia e
      * acordos incompletos. Por isso as assercoes sao sempre **relativas** ao relatorio lido antes.
      */
-    it('exige autenticacao e devolve as quatro verificacoes com a cobertura', async () => {
+    it('exige autenticacao e devolve as cinco verificacoes com a cobertura', async () => {
       const unauthorized = await app.inject({ method: 'GET', url: '/api/v1/reconciliation/post-load' });
       expect(unauthorized.statusCode).toBe(401);
 
@@ -974,7 +984,8 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
         'legacy_provenance',
         'legacy_key_resolves',
         'agreement_total',
-        'agreement_installments'
+        'agreement_installments',
+        'guardian_customer_link'
       ]);
       for (const check of report.checks) {
         expect(check.title.length).toBeGreaterThan(0);
@@ -1128,6 +1139,257 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
       expect(clamped.statusCode).toBe(200);
       expect(clamped.json()).toMatchObject({ limit: 200, check: 'legacy_provenance' });
     });
+  });
+
+  describe('promocao responsavel -> cliente', () => {
+    interface QueueItem {
+      guardianId: string;
+      guardianName: string;
+      studentId: string;
+      status: string;
+      payers: number;
+      candidates: { customerId: string; fullName: string; agreements: number }[];
+    }
+    interface Queue {
+      status: string | null;
+      limit: number;
+      offset: number;
+      titles: Record<string, string>;
+      counts: Record<string, number>;
+      items: QueueItem[];
+    }
+
+    const adminHeaders = async () => ({ authorization: `Bearer ${await accessTokenOf('admin@example.com')}` });
+    const financeHeaders = async () => ({ authorization: `Bearer ${await accessTokenOf('finance@example.com')}` });
+    const viewerHeaders = async () => ({ authorization: `Bearer ${await accessTokenOf('viewer@example.com')}` });
+
+    /**
+     * Cenario minimo do vinculo: um aluno, um guardiao (inserido direto, porque `guardians` nasce
+     * da migracao) e um cliente pagador por nome informado, cada um com um acordo do **mesmo**
+     * aluno. E o unico universo de candidatos que a fila considera.
+     */
+    const seedScenario = async (params: { guardianName: string; payerNames: string[] }) => {
+      const suffix = randomUUID().slice(0, 8);
+      const school = await pool.query<{ id: string }>(
+        "INSERT INTO schools (legal_name) VALUES ($1) RETURNING id",
+        [`Colegio Vinculo ${suffix}`]
+      );
+      const schoolId = school.rows[0]!.id;
+      const student = await pool.query<{ id: string }>(
+        'INSERT INTO students (school_id, full_name) VALUES ($1, $2) RETURNING id',
+        [schoolId, `Aluno Vinculo ${suffix}`]
+      );
+      const studentId = student.rows[0]!.id;
+      const guardianId = randomUUID();
+      await pool.query('INSERT INTO guardians (id, student_id, full_name) VALUES ($1, $2, $3)', [
+        guardianId,
+        studentId,
+        params.guardianName
+      ]);
+      const customerIds: string[] = [];
+      for (const name of params.payerNames) {
+        const customer = await pool.query<{ id: string }>(
+          'INSERT INTO customers (full_name) VALUES ($1) RETURNING id',
+          [name]
+        );
+        const customerId = customer.rows[0]!.id;
+        customerIds.push(customerId);
+        await pool.query(
+          `INSERT INTO agreements (school_id, customer_id, student_id, total_amount, installments_count)
+           VALUES ($1, $2, $3, 100, 1)`,
+          [schoolId, customerId, studentId]
+        );
+      }
+      return { schoolId, studentId, guardianId, customerIds };
+    };
+
+    const queueOf = async (headers: Record<string, string>, query = '?limit=200'): Promise<Queue> => {
+      const response = await app.inject({ method: 'GET', url: `/api/v1/guardians/customer-candidates${query}`, headers });
+      expect({ url: query, statusCode: response.statusCode }).toEqual({ url: query, statusCode: 200 });
+      return response.json() as Queue;
+    };
+
+    const itemOf = (queue: Queue, guardianId: string): QueueItem => {
+      const found = queue.items.find((item) => item.guardianId === guardianId);
+      if (!found) throw new Error(`guardian ${guardianId} missing from queue`);
+      return found;
+    };
+
+    it('classifica o candidato unico comparando nome sem acento e sem caixa', async () => {
+      const { guardianId, customerIds } = await seedScenario({
+        guardianName: 'José da Silva',
+        payerNames: ['JOSE DA SILVA']
+      });
+
+      const queue = await queueOf(await adminHeaders(), '?status=single&limit=200');
+      expect(queue.status).toBe('single');
+      const item = itemOf(queue, guardianId);
+      expect(item.status).toBe('single');
+      expect(item.payers).toBe(1);
+      expect(item.candidates).toHaveLength(1);
+      expect(item.candidates[0]).toMatchObject({ customerId: customerIds[0], fullName: 'JOSE DA SILVA', agreements: 1 });
+      expect(Object.keys(queue.titles).sort()).toEqual(['ambiguous', 'linked', 'no_match', 'no_payer', 'single']);
+      expect(queue.counts.single).toBeGreaterThanOrEqual(1);
+    });
+
+    it('marca como ambiguo quando duas linhas de pagador tem o nome do responsavel', async () => {
+      const { guardianId, customerIds } = await seedScenario({
+        guardianName: 'Maria Souza',
+        payerNames: ['Maria Souza', 'MARIA SOUZA']
+      });
+
+      const item = itemOf(await queueOf(await adminHeaders(), '?status=ambiguous&limit=200'), guardianId);
+      expect(item.status).toBe('ambiguous');
+      expect(item.payers).toBe(2);
+      expect(item.candidates.map((candidate) => candidate.customerId).sort()).toEqual([...customerIds].sort());
+    });
+
+    it('separa o pagador com outro nome do aluno sem pagador', async () => {
+      const noMatch = await seedScenario({ guardianName: 'Joana Lima', payerNames: ['Outra Pessoa'] });
+      const noPayer = await seedScenario({ guardianName: 'Sem Acordo', payerNames: [] });
+
+      const queue = await queueOf(await adminHeaders());
+      expect(itemOf(queue, noMatch.guardianId)).toMatchObject({ status: 'no_match', payers: 1, candidates: [] });
+      expect(itemOf(queue, noPayer.guardianId)).toMatchObject({ status: 'no_payer', payers: 0, candidates: [] });
+      expect(queue.counts.no_payer).toBeGreaterThanOrEqual(1);
+      expect(queue.counts.no_match).toBeGreaterThanOrEqual(1);
+    });
+
+    it('recusa vincular a cliente que nao paga acordo do aluno e aceita o pagador', async () => {
+      const headers = await adminHeaders();
+      const { guardianId, customerIds } = await seedScenario({
+        guardianName: 'Pai Pagador',
+        payerNames: ['Pai Pagador']
+      });
+      const outsider = await pool.query<{ id: string }>(
+        "INSERT INTO customers (full_name) VALUES ('Escola Sem Acordo') RETURNING id"
+      );
+      const outsiderId = outsider.rows[0]!.id;
+
+      const refused = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/guardians/${guardianId}`,
+        headers,
+        payload: { customerId: outsiderId }
+      });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'CUSTOMER_NOT_PAYER' });
+      const untouched = await pool.query<{ customer_id: string | null }>(
+        'SELECT customer_id FROM guardians WHERE id = $1',
+        [guardianId]
+      );
+      expect(untouched.rows[0]!.customer_id).toBeNull();
+
+      const unknown = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/guardians/${guardianId}`,
+        headers,
+        payload: { customerId: randomUUID() }
+      });
+      expect(unknown.statusCode).toBe(400);
+      expect(unknown.json()).toMatchObject({ code: 'INVALID_REFERENCE' });
+
+      const linked = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/guardians/${guardianId}`,
+        headers,
+        payload: { customerId: customerIds[0], isVerified: true }
+      });
+      expect(linked.statusCode).toBe(200);
+      expect(linked.json()).toMatchObject({ id: guardianId, customerId: customerIds[0], isVerified: true });
+
+      const item = itemOf(await queueOf(headers, '?status=linked&limit=200'), guardianId);
+      expect(item).toMatchObject({ status: 'linked', candidates: [{ customerId: customerIds[0] }] });
+
+      const audited = await pool.query<{ action: string }>(
+        'SELECT action FROM audit_logs WHERE entity_id = $1::uuid ORDER BY created_at DESC LIMIT 1',
+        [guardianId]
+      );
+      expect(audited.rows[0]?.action).toBe('guardian.updated');
+
+      const viewer = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/guardians/${guardianId}`,
+        headers: await viewerHeaders(),
+        payload: { customerId: null }
+      });
+      expect(viewer.statusCode).toBe(403);
+
+      const unlinked = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/guardians/${guardianId}`,
+        headers,
+        payload: { customerId: null }
+      });
+      expect(unlinked.statusCode).toBe(200);
+      expect(unlinked.json()).toMatchObject({ customerId: null });
+    });
+
+
+    it('acusa vinculo insustentavel na quinta verificacao', async () => {
+      const headers = await adminHeaders();
+      const { guardianId } = await seedScenario({ guardianName: 'Vinculo Ruim', payerNames: ['Vinculo Ruim'] });
+      const outsider = await pool.query<{ id: string }>(
+        "INSERT INTO customers (full_name) VALUES ('Cliente Fora da Cadeia') RETURNING id"
+      );
+      const outsiderId = outsider.rows[0]!.id;
+
+      const reportOf = async () => {
+        const response = await app.inject({ method: 'GET', url: '/api/v1/reconciliation/post-load', headers });
+        expect(response.statusCode).toBe(200);
+        const report = response.json() as { checks: { key: string; divergent: number; status: string }[] };
+        const check = report.checks.find((entry) => entry.key === 'guardian_customer_link');
+        if (!check) throw new Error('guardian_customer_link missing from report');
+        return check;
+      };
+
+      const before = await reportOf();
+      // Escrita direta no banco, sem passar pela API: e o cenario que a verificacao existe para pegar.
+      await pool.query('UPDATE guardians SET customer_id = $2 WHERE id = $1', [guardianId, outsiderId]);
+
+      const after = await reportOf();
+      expect(after.divergent).toBe(before.divergent + 1);
+      expect(after.status).toBe('divergent');
+
+      const detail = await app.inject({
+        method: 'GET',
+        url: '/api/v1/reconciliation/post-load/guardian_customer_link?limit=50',
+        headers
+      });
+      expect(detail.statusCode).toBe(200);
+      const items = (detail.json() as { items: { id: string; customerId: string }[] }).items;
+      expect(items.find((item) => item.id === guardianId)).toMatchObject({ customerId: outsiderId });
+
+      await pool.query('UPDATE guardians SET customer_id = NULL WHERE id = $1', [guardianId]);
+      expect((await reportOf()).divergent).toBe(before.divergent);
+    });
+
+    it('exige autenticacao, recusa status desconhecido e ecoa paginacao', async () => {
+      const unauthorized = await app.inject({ method: 'GET', url: '/api/v1/guardians/customer-candidates' });
+      expect(unauthorized.statusCode).toBe(401);
+
+      const headers = await adminHeaders();
+      const invalid = await app.inject({
+        method: 'GET',
+        url: '/api/v1/guardians/customer-candidates?status=nope',
+        headers
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json()).toMatchObject({ code: 'INVALID_REQUEST' });
+
+      const paged = await queueOf(headers, '?limit=5&offset=2');
+      expect(paged).toMatchObject({ limit: 5, offset: 2, status: null });
+      expect(paged.items.length).toBeLessThanOrEqual(5);
+      expect(paged.counts).toMatchObject({
+        single: expect.any(Number),
+        ambiguous: expect.any(Number),
+        no_match: expect.any(Number),
+        no_payer: expect.any(Number),
+        linked: expect.any(Number)
+      });
+    });
+
+
   });
 
 });

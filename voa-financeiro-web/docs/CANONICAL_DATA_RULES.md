@@ -84,6 +84,8 @@ Tabela canonica: `guardians` (migration `0011`), filha de `students`.
 - `document_number` guarda o CPF como esta na origem, somente digitos: 1.084 dos 6.651 preenchidos nao passam no digito verificador e continuam gravados como registro, nao como chave. Documento invalido nunca vincula pessoa.
 - `document_rg`, `marital_status` e `occupation` vem de `Aluno_RGResponsavel`, `Aluno_ResponsavelEstadoCivil` e `Aluno_ResponsavelProfissao` (621, 585 e 585 linhas). Sao texto livre: `marital_status` tem valores que nao sao estado civil (um CPF, um nome, `GARCOM`) e entra como veio, sem traducao.
 - `customer_id` nasce **nulo** e `is_verified` **falso**: o guardiao e uma pessoa do legado, nao um cliente pagador. Vira `customers` so por conciliacao assistida, nunca por nome.
+- A conciliacao assistida e a fila de `GET /api/v1/guardians/customer-candidates` (2026-10-27): o candidato e o **pagador dos acordos do proprio aluno** (`agreements.customer_id`) com o mesmo nome normalizado, e o `PATCH /api/v1/guardians/:id` recusa `409 CUSTOMER_NOT_PAYER` qualquer cliente que nao pague acordo desse aluno. Comparar com `customers` inteiro nao serve (24.696 dos 26.264 sao escolas/empresas de `TBL_CLIENTE`) e CPF nao casa com CNPJ.
+- A quinta verificacao da conciliacao pos-corte (`guardian_customer_link`) devolve exatamente os vinculos que essa regra nao sustenta: `customer_id` preenchido para cliente que nao paga acordo do aluno.
 - `is_financial` marca o responsavel financeiro do aluno (origem: `Aluno.Responsavel_Financeiro`); `is_financial` e `is_verified` sao decisoes do canonico, nao do legado.
 - `guardians.customer_id` nao substitui `students.customer_id`: o primeiro e o responsavel declarado, o segundo o pagador do acordo.
 

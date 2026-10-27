@@ -49,7 +49,8 @@ import {
   isReconciliationCheck,
   parseDetailLimit,
   summarize,
-  type CheckOutcome
+  type CheckOutcome,
+  type ReconciliationCheck
 } from './domain/reconciliation.js';
 import {
   listAgreementInstallmentDivergences,
@@ -62,6 +63,19 @@ import {
   loadProvenance,
   loadUnresolvedLegacyKeys
 } from './db/reconciliation-post-load.js';
+import {
+  GUARDIAN_LINK_STATUSES,
+  GUARDIAN_LINK_TITLES,
+  isGuardianLinkStatus,
+  parseLinkOffset
+} from './domain/guardian-links.js';
+import {
+  checkGuardianCustomerLink,
+  listGuardianCustomerLinkDivergences,
+  listGuardianLinkQueue,
+  loadGuardianCustomerLinkDivergence,
+  loadGuardianLinkCounts
+} from './db/guardian-links.js';
 
 const loginSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
@@ -95,6 +109,24 @@ const studentSchema = z.object({
   documentNumber: z.string().trim().max(30).optional(),
   enrollmentNumber: z.string().trim().max(50).optional()
 });
+
+/**
+ * Detalhe de cada verificacao do relatorio pos-corte, por chave.
+ *
+ * Um mapa em vez da cadeia de ternarios que existia: com a quinta verificacao a cadeia virava
+ * aninhamento de tres niveis, e uma chave nova passa a ser um erro de tipo aqui (o `Record` e
+ * exaustivo) em vez de cair no `else` e devolver o detalhe da verificacao errada.
+ */
+const RECONCILIATION_DETAILS: Record<
+  ReconciliationCheck,
+  (pool: Pool, limit: number) => Promise<unknown[]>
+> = {
+  legacy_provenance: listProvenanceGaps,
+  legacy_key_resolves: listUnresolvedLegacyKeys,
+  agreement_total: listAgreementTotalDivergences,
+  agreement_installments: listAgreementInstallmentDivergences,
+  guardian_customer_link: listGuardianCustomerLinkDivergences
+};
 
 const agreementSchema = z.object({
   schoolId: z.string().uuid(),
@@ -221,6 +253,18 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
   };
 
   /**
+   * Trava opcional de uma escrita: roda depois da validacao do corpo e antes do `UPDATE`.
+   *
+   * Devolve a resposta de recusa pronta (status, `code`, `message`) ou `null` quando o valor pode
+   * ser gravado. Existe porque `patchRow` e generico e nem toda regra de negocio cabe no schema zod
+   * - a do vinculo do guardiao depende de consultar o banco.
+   */
+  type PatchGuard = (context: {
+    id: string;
+    changes: Record<string, unknown>;
+  }) => Promise<{ status: number; code: string; message: string } | null>;
+
+  /**
    * Answers one PATCH: the body must carry at least one known field, only the sent fields are
    * written (plus `updated_at`) and the change is audited as `<entity>.updated` with the field names.
    *
@@ -228,7 +272,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
    * to turn an accidental no-op into a precise error. `null` clears a nullable column; sending `""`
    * is rejected by the schema.
    */
-  const runPatch = async (request: FastifyRequest, reply: FastifyReply, spec: PatchSpec): Promise<FastifyReply> => {
+  const runPatch = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    spec: PatchSpec,
+    guard?: PatchGuard
+  ): Promise<FastifyReply> => {
     const { id } = request.params as { id?: string };
     if (!id || !z.string().uuid().safeParse(id).success) {
       return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid id', correlationId: request.id });
@@ -243,6 +292,13 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       return reply.code(400).send({ code: 'EMPTY_PATCH', message: 'At least one field must be provided', correlationId: request.id });
     }
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+
+    if (guard) {
+      const refused = await guard({ id, changes });
+      if (refused) {
+        return reply.code(refused.status).send({ code: refused.code, message: refused.message, correlationId: request.id });
+      }
+    }
 
     const columns: Record<string, unknown> = {};
     for (const field of fields) {
@@ -432,6 +488,50 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return { items: result.rows };
   });
 
+  // -----------------------------------------------------------------------------------------------
+  // Promocao responsavel -> cliente (assistida).
+  //
+  // A `0011` deixou `guardians.customer_id` nulo e `is_verified` falso porque **nome do legado nunca
+  // vira cliente**. Esta secao nao muda essa regra: a fila mostra o que a estrutura do dado ja
+  // sustenta (o pagador dos acordos do proprio aluno com o mesmo nome do responsavel) e a escrita
+  // continua sendo o `PATCH /api/v1/guardians/:id`, que exige o mesmo pagador e audita o par que uma
+  // **pessoa** confirmou.
+  //
+  // Por que o candidato nao sai de `customers` inteiro: 24.696 dos 26.264 clientes sao escolas e
+  // empresas de `TBL_CLIENTE` (CNPJ), e os 1.568 restantes sao o pagador sintetizado de
+  // `TBL_PAGAMENTO`. O universo util e `agreements.customer_id` do aluno do guardiao - e essa mesma
+  // condicao e a trava do PATCH, que recusa vincular um responsavel a escola.
+  // -----------------------------------------------------------------------------------------------
+
+  /**
+   * Fila de conciliacao: 6.347 guardioes classificados em `single`, `ambiguous`, `no_match`,
+   * `no_payer` e `linked`.
+   *
+   * `counts` volta sempre completo (mesmo com `status`), para a tela mostrar o tamanho de cada aba
+   * sem uma chamada por filtro. Medido no canonico local em 2026-10-27: 274 `single`, 102
+   * `ambiguous`, 774 `no_match`, 5.197 `no_payer`, 0 `linked`.
+   */
+  app.get('/api/v1/guardians/customer-candidates', { preHandler: requireAuthentication }, async (request, reply) => {
+    const query = request.query as { status?: string; limit?: string; offset?: string };
+    const status = query.status?.trim() || undefined;
+    if (status !== undefined && !isGuardianLinkStatus(status)) {
+      return reply.code(400).send({
+        code: 'INVALID_REQUEST',
+        message: `status must be one of ${GUARDIAN_LINK_STATUSES.join(', ')}`,
+        correlationId: request.id
+      });
+    }
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const limit = parseDetailLimit(query.limit);
+    const offset = parseLinkOffset(query.offset);
+    const [items, counts] = await Promise.all([
+      listGuardianLinkQueue(pool, { status, limit, offset }),
+      loadGuardianLinkCounts(pool)
+    ]);
+    return { generatedAt: new Date().toISOString(), status: status ?? null, limit, offset, titles: GUARDIAN_LINK_TITLES, counts, items };
+  });
+
+
   app.get('/api/v1/students/:studentId/contacts', { preHandler: requireAuthentication }, async (request, reply) => {
     const { studentId } = request.params as { studentId: string };
     if (!z.string().uuid().safeParse(studentId).success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid student id', correlationId: request.id });
@@ -555,7 +655,29 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     runPatch(request, reply, patchSpecs.payments));
 
   app.patch('/api/v1/guardians/:id', { preHandler: requirePermission('catalog:write') }, (request, reply) =>
-    runPatch(request, reply, patchSpecs.guardians));
+    runPatch(request, reply, patchSpecs.guardians, async ({ id, changes }) => {
+      /**
+       * Trava do vinculo responsavel -> cliente.
+       *
+       * `customerId: null` desfaz o vinculo (nada a conferir) e a ausencia do campo nao muda nada;
+       * so um uuid precisa passar. Sem esta trava o PATCH aceitaria qualquer um dos 26.264 clientes,
+       * e 24.696 deles sao escolas/empresas de `TBL_CLIENTE` - promover um responsavel a escola nao
+       * e conciliacao, e erro de digitacao.
+       */
+      const customerId = changes.customerId;
+      if (typeof customerId !== 'string' || !pool) return null;
+      const check = await checkGuardianCustomerLink(pool, id, customerId);
+      if (check === 'ok') return null;
+      if (check === 'guardian_not_found') return { status: 404, code: 'NOT_FOUND', message: 'Guardian not found' };
+      if (check === 'customer_not_found') {
+        return { status: 400, code: 'INVALID_REFERENCE', message: 'Customer does not exist' };
+      }
+      return {
+        status: 409,
+        code: 'CUSTOMER_NOT_PAYER',
+        message: 'Customer does not pay any agreement of this guardian student'
+      };
+    }));
 
   app.patch('/api/v1/student-contacts/:id', { preHandler: requirePermission('catalog:write') }, (request, reply) =>
     runPatch(request, reply, patchSpecs.studentContacts));
@@ -785,19 +907,20 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
   // -----------------------------------------------------------------------------------------------
 
   /**
-   * Relatorio completo: as quatro verificacoes + a cobertura por entidade.
+   * Relatorio completo: as cinco verificacoes + a cobertura por entidade.
    *
-   * `ok` so e `true` quando as quatro estao zeradas. A cobertura vem junto porque o operador precisa
+   * `ok` so e `true` quando todas estao zeradas. A cobertura vem junto porque o operador precisa
    * comparar a rodada com a anterior (`stagedRows` x `canonicalRows` x `pendingCanonicalKeys`), nao
    * porque ela seja um gate.
    */
   app.get('/api/v1/reconciliation/post-load', { preHandler: requireAuthentication }, async (request, reply) => {
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
-    const [provenance, unresolved, agreementTotal, agreementInstallments, coverage] = await Promise.all([
+    const [provenance, unresolved, agreementTotal, agreementInstallments, guardianLinks, coverage] = await Promise.all([
       loadProvenance(pool),
       loadUnresolvedLegacyKeys(pool),
       loadAgreementTotalDivergence(pool),
       loadAgreementInstallmentDivergence(pool),
+      loadGuardianCustomerLinkDivergence(pool),
       loadCoverage(pool)
     ]);
     const withoutProvenance = provenance.reduce((total, row) => total + row.withoutProvenance, 0);
@@ -806,7 +929,8 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
       { key: 'legacy_provenance', divergent: withoutProvenance },
       { key: 'legacy_key_resolves', divergent: unresolvedKeys },
       { key: 'agreement_total', divergent: agreementTotal.divergent },
-      { key: 'agreement_installments', divergent: agreementInstallments }
+      { key: 'agreement_installments', divergent: agreementInstallments },
+      { key: 'guardian_customer_link', divergent: guardianLinks }
     ] satisfies CheckOutcome[];
     const summary = summarize(outcomes);
     const checks = [
@@ -836,6 +960,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
         title: CHECK_TITLES.agreement_installments,
         status: classify(agreementInstallments),
         divergent: agreementInstallments
+      },
+      {
+        key: 'guardian_customer_link' as const,
+        title: CHECK_TITLES.guardian_customer_link,
+        status: classify(guardianLinks),
+        divergent: guardianLinks
       }
     ];
     return { generatedAt: new Date().toISOString(), ...summary, checks, coverage };
@@ -858,14 +988,7 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     }
     const limit = parseDetailLimit((request.query as { limit?: string }).limit);
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
-    const items =
-      check === 'legacy_provenance'
-        ? await listProvenanceGaps(pool, limit)
-        : check === 'legacy_key_resolves'
-          ? await listUnresolvedLegacyKeys(pool, limit)
-          : check === 'agreement_total'
-            ? await listAgreementTotalDivergences(pool, limit)
-            : await listAgreementInstallmentDivergences(pool, limit);
+    const items = await RECONCILIATION_DETAILS[check](pool, limit);
     return { check, title: CHECK_TITLES[check], limit, items };
   });
 

@@ -707,7 +707,7 @@ agora tem uma rota propria para conferir isso a qualquer momento:
 
 #### Conciliacao pos-corte pela API (2026-10-27)
 
-`GET /api/v1/reconciliation/post-load` (e `.../:check` para o detalhe) roda as quatro verificacoes
+`GET /api/v1/reconciliation/post-load` (e `.../:check` para o detalhe) roda as cinco verificacoes
 descritas em `docs/API_ROUTES.md` direto no banco. Medicao no canonico local, apos a carga:
 
 | Verificacao | Resultado local |
@@ -716,6 +716,7 @@ descritas em `docs/API_ROUTES.md` direto no banco. Medicao no canonico local, ap
 | `legacy_key_resolves` | 0 |
 | `agreement_total` | 0 (delta `0.00`) |
 | `agreement_installments` | 0 |
+| `guardian_customer_link` | 0 (coluna nula em 6.347 guardioes) |
 
 Cobertura informativa da mesma rodada (`canonico` x `estagiado` x `pendente`):
 
@@ -740,6 +741,37 @@ A primeira versao da consulta de `legacy_key_resolves` levava **1,3 s** porque u
 `count(*) FILTER (WHERE NOT EXISTS ...)`; com o `NOT EXISTS` no `WHERE` o planner monta um *hash anti
 join* e o relatorio inteiro cai para ~250 ms. O comentario esta no modulo
 (`apps/api/src/db/reconciliation-post-load.ts`) para a regressao nao voltar.
+
+#### Promocao responsavel -> cliente (2026-10-27)
+
+A quinta verificacao nasceu junto com a fila de promocao. `GET /api/v1/guardians/customer-candidates`
+classifica os 6.347 guardioes contra o pagador dos acordos do **proprio aluno**, e o `PATCH
+/api/v1/guardians/:id` recusa (`409 CUSTOMER_NOT_PAYER`) qualquer cliente que nao pague acordo desse
+aluno. Medicao no canonico local:
+
+| `status` | Guardioes | O que significa |
+|---|---:|---|
+| `single` | 274 | um pagador com nome igual ao do responsavel (normalizado) |
+| `ambiguous` | 102 | 2+ linhas de pagador com esse nome (a mesma pessoa repetida por acordo) |
+| `no_match` | 774 | o aluno tem pagador, mas com outro nome (em geral o proprio aluno) |
+| `no_payer` | 5.197 | o aluno nao tem acordo com pagador |
+| `linked` | 0 | `customer_id` ainda nulo em todos |
+
+O numero que fecha a conta do vale a pena ser explicito, porque a primeira estimativa (380 nomes
+iguais / 111 ambiguos) media a coisa errada:
+
+- **a comparacao de CPF nao serve**: os 6.340 guardioes tem CPF (11 digitos) e os 2.138 clientes com
+  documento de `TBL_CLIENTE` tem CNPJ (14) - zero pares;
+- **comparar com a tabela `customers` inteira nao serve**: 24.696 dos 26.264 clientes sao escolas e
+  empresas de `TBL_CLIENTE`, entao o "match" seria com razao social;
+- **o universo certo e `agreements.customer_id` do aluno**: os 1.568 clientes de `TBL_PAGAMENTO` sao
+  o pagador sintetizado de cada acordo, e e nele que o nome do responsavel aparece (274 + 102 = 376
+  linhas, contra os 380 da estimativa inicial - a diferenca e a normalizacao de acento/caixa).
+
+A fila roda em **120 ms** com o mesmo criterio de nome do banco (`translate` -> `lower` -> colapso de
+espacos -> `btrim`, nessa ordem: o banco local esta em collation `C`, onde `lower('É')` nao rebaixa).
+As 102 linhas `ambiguous` nao sao duvida de identidade - sao a mesma pessoa em uma linha de pagador
+por acordo do aluno -, mas a escolha continua humana: a API nao sugere candidato nesse caso.
 
 ## Pendencias de entrada ainda abertas
 
