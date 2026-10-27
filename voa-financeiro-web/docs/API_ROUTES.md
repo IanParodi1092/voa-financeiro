@@ -193,7 +193,7 @@ As permissoes ficam em `apps/api/src/auth/roles.ts` e sao conferidas antes de to
 | Permissao | Rotas | Papeis |
 |---|---|---|
 | `read` | todas as leituras | `admin`, `finance`, `operator`, `viewer` |
-| `catalog:write` | `schools`, `customers`, `contacts`, `students` (`POST` e `PATCH`) | `admin`, `operator` |
+| `catalog:write` | `schools`, `customers`, `contacts` (`POST`), `students` (`POST`) e `schools`, `customers`, `students`, `guardians`, `student-contacts` (`PATCH`; o de `guardians` inclui a trava de pagador da promocao) | `admin`, `operator` |
 | `finance:write` | `agreements`, `installments`, `payments` (`POST` e `PATCH`) | `admin`, `finance` |
 | `migration:write` | registro do lote, `validate`, `commit` e resolucao de achado | `admin` |
 | `audit` | `GET /audit-logs` | `admin` |
