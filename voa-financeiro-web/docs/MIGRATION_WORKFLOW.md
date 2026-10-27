@@ -398,6 +398,39 @@ dado ate alguem rodar `--commit --enrich-reused`, quando `agreements.reference` 
 loader: `status: proposed` so carrega com aprovacao explicita do operador. Falta remover o `status`
 (virar `confirmed`) depois de validar a coluna em tela - e o que devolve a rodada limpa sem flag.
 
+### Aplicado na migration 0010 (2026-10-27)
+
+As tres lacunas de schema que sobravam da classe D da triagem
+(`docs/FIELD_MAPPING_TRIAGE.md`) sairam com a
+`apps/api/migrations/0010_class_d_schema_gaps.sql`:
+
+| Origem | Linhas | Objeto criado | Por que |
+|---|---:|---|---|
+| `TBL_PAGAMENTO.Pagamento_DataFechamento` | 1.497 de 1.572 preenchidos | `agreements.closed_at timestamptz` (nullable) + indice parcial | `agreements` nao tinha data de fechamento nem de assinatura |
+| `TBL_ENDTEL` | 47.562 linhas, 6.894 alunos | tabela `student_contacts` (espelho de `contacts` com `student_id`, proveniencia legada e chave unica `(legacy_source, legacy_table, legacy_id)`) | `contacts.customer_id` e `NOT NULL` e o contato pertence ao aluno, nao ao cliente pagador |
+| `TBL_USER.ID` | 28 usuarios | `users.legacy_source/legacy_table/legacy_id` + `users_legacy_key_idx` | sem chave legada nao ha como casar a conta canonica com a linha do PowerApps |
+
+Tres pontos de operacao:
+
+1. A `0010` e **inerte para a carga**, igual a `0009`: nenhuma coluna do dicionario aponta para os
+   objetos novos. A rodada `--allow-proposed agreements` continua com `considered=121.991`,
+   `loaded=104.709`, `inserted=0`, `reused=104.709` e `exit 4` (pelo `asaas_charges`), e o portao
+   continua com `6` itens (`5 REVIEW_REQUIRED` + `1 MAPPING_NOT_CONFIRMED`).
+2. O que mudou foi o **motivo** do bloqueio, nao a contagem: `Pagamento_DataFechamento` saiu de
+   `schema_gap_pending` para `pending_policy` (fechamento do acordo x assinatura), `TBL_USER.ID`
+   para `user_import_requires_credential_reset` (`password_hash` e `NOT NULL`, a senha do legado nao
+   migra) e as quatro colunas de `TBL_ENDTEL` para `student_contact_load_pending` (5.988 linhas sem
+   tipo nem status, e o vinculo segue a decisao de identidade da classe C). O codigo de motivo
+   `student_contact_not_modeled` saiu do vocabulario junto com o gap que ele descrevia.
+3. `student_contacts` **nao** recebeu chave natural `(student_id, type, value)`: o legado nao garante
+   unicidade e a decisao de deduplicacao pertence a etapa de carga, nao ao schema.
+
+Validacao: aplicacao no banco existente (`Applied migration 0010_class_d_schema_gaps.sql`, segunda
+rodada sem nada a aplicar), conferencia de colunas/FK/indices no `information_schema`/`pg_indexes`,
+aplicacao do zero num banco vazio (`voa_migtest`: os `10` arquivos em ordem, sem erro, banco
+descartado depois), suite Python com `205` testes e dicionario em `39 map`, `78 ignore`,
+`734 defer`, `5 review`, `0` problema estrutural e `0` divergencia de staging.
+
 ### Decisao de `billing_type` e `environment` das cobrancas
 
 - `asaas_customers.environment` e `asaas_charges.environment` ficam em `production` (decisao do

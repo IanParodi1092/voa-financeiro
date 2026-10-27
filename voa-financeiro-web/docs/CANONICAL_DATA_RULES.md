@@ -20,7 +20,8 @@ A combinacao `(legacy_source, legacy_table, legacy_id)` deve ser unica quando a 
 | `schools`, `customers`, `students`, `agreements` | `legacy_source/legacy_table/legacy_id` desde `0002`/`0004` | `INSERT ... ON CONFLICT (legacy_source, legacy_table, legacy_id)` na carga |
 | `contacts` (46.829 linhas), `installments` (15.259 linhas) | desde a `0009`, com backfill | mesma chave; as linhas gravadas antes da `0009` foram carimbadas por `npm run db:backfill-legacy-provenance` (recalcula o UUID deterministico da linha de origem) |
 | `payments`, `asaas_customers`, `asaas_charges` | nao tem | UUID deterministico `uuid5(carga, "aba:linha")`; o legado nao guarda id de pagamento/cobranca e o vinculo vem de `links` (`payments.installment_id = "row:installments"`) |
-| `users` | nao tem | importacao bloqueada (`TBL_USER.ID` em `review`): a entrada exigiria politica de credencial |
+| `users` | `legacy_source/legacy_table/legacy_id` desde a `0010` | ainda sem carga: `TBL_USER.ID` segue em `review` porque a entrada exige politica de credencial (`password_hash` e `NOT NULL` e a senha do legado nao migra) |
+| `student_contacts` | `legacy_source/legacy_table/legacy_id` desde a `0010` | ainda sem carga: a aba `TBL_ENDTEL` (47.562 linhas) nao esta mapeada |
 
 Regra de operacao: a chave legada so vale para uma tabela quando o dicionario declara
 `provides_legacy_id_for` nela. Criar a coluna sem carimbar as linhas antigas faz a carga seguinte
@@ -78,6 +79,7 @@ Tabela canonica: `students`.
 
 - `agreements.id`: UUID do acordo local.
 - `agreements.legacy_id`: origem de `TBL_PAGAMENTO`/`TBL_DIVIDA` conforme mapeamento confirmado.
+- `agreements.closed_at`: data de fechamento do acordo (nullable desde a `0010`); continua sem carga porque a origem (`Pagamento_DataFechamento`) ainda nao teve a semantica confirmada (fechamento x assinatura).
 - `installments.id`: UUID unico de cada parcela.
 - `installments.installment_number`: numero da parcela dentro do acordo.
 - Regra forte: `(agreement_id, installment_number)` unica.
@@ -104,6 +106,7 @@ A identificacao exibida para o operador deve combinar um codigo curto legivel co
 
 - Contatos sao registros proprios, nao colunas duplicadas em cada entidade.
 - `contacts.customer_id` referencia o cliente.
+- Contato do aluno fica em `student_contacts.student_id` (tabela criada na `0010`): `contacts` e restrito a `customers`, porque `customer_id` e `NOT NULL` e o contato pertence ao aluno, nao ao pagador.
 - Historico de contato do aluno deve ser separado de dados atuais de telefone/e-mail.
 - Telefone e e-mail devem ser normalizados e marcados como primarios/verificados.
 - ChatGuru e e-mail devem registrar consentimento, template, tentativa, resposta e entrega.

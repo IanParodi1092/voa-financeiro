@@ -123,7 +123,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Aluno.Escola.ID | map | students.school_id | reference | trim | sim | schools | resolve schools.legacy_id; 6.651 preenchidos em 72 escolas |
 | Aluno.Nome | map | students.full_name | name | collapse_ws | sim |  |  |
 | Aluno.Responsavel_Financeiro | review |  |  |  |  |  | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so; 380 nomes coincidem com customers.full_name mas 111 casam com 2+ clientes; nome nunca identifica cliente; decisao 2026-10-27: mantido em review ate existir entidade guardians (0010) |
-| Aluno.Telefone | defer |  |  |  |  |  | student_contact_not_modeled [gap: students_contact] |
+| Aluno.Telefone | defer |  |  |  |  |  | 535 preenchidos em 6.652: copia esparsa do telefone do aluno; TBL_ENDTEL e a fonte (23.015 telefones em 6.894 alunos) [gap: students_contact] |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
 | __PowerAppsId__ | ignore |  |  |  |  |  | empty_column |
 | Aluno.Login.ID | defer |  |  |  |  |  | user_link_requires_review |
@@ -698,17 +698,17 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 - Entidade canonica: (sem entidade canonica nesta fase)
 - Tipo de linha: deferred
-- Observacoes: 47.562 telefones/e-mails de aluno (ENDTEL_ALUNO_ID, 3 tipos, flag principal). Exige tabela de contato de aluno.
+- Observacoes: 47.562 telefones/e-mails/enderecos de aluno (6.894 alunos, 44.764 linhas com aluno resolvido). A tabela student_contacts nasceu na migration 0010; o mapeamento da aba fica para a etapa de carga.
 - Colunas: 9 (map=0, ignore=3, defer=5, review=1, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| ENDTEL_ALUNO_ID | review |  |  |  |  |  | 47.561 preenchidos em 6.894 alunos; unico contato de aluno em volume [gap: students_contact] |
-| ENDTEL_TIPO | defer |  |  |  |  |  | student_contact_not_modeled [gap: students_contact] |
-| ENDTEL_STATUS | defer |  |  |  |  |  | student_contact_not_modeled [gap: students_contact] |
-| ENDTEL_VALOR | defer |  |  |  |  |  | student_contact_not_modeled [gap: students_contact] |
-| ENDTEL_PRINCIPAL | defer |  |  |  |  |  | student_contact_not_modeled [gap: students_contact] |
+| ENDTEL_ALUNO_ID | review |  |  |  |  |  | 47.562 linhas, 6.894 alunos, 44.764 linhas com aluno resolvido por students.legacy_id; student_contacts existe desde a 0010 e o vinculo segue em revisao pela mesma decisao de identidade da classe C [gap: students_contact] |
+| ENDTEL_TIPO | defer |  |  |  |  |  | 23.015 telefone, 9.927 endereco, 8.632 email; 5.988 linhas sem tipo [gap: students_contact] |
+| ENDTEL_STATUS | defer |  |  |  |  |  | 35.578 ATIVADO, 5.996 DESATIVADO, 5.988 vazios (as mesmas linhas sem tipo) [gap: students_contact] |
+| ENDTEL_VALOR | defer |  |  |  |  |  | student_contact_load_pending [gap: students_contact] |
+| ENDTEL_PRINCIPAL | defer |  |  |  |  |  | 6.971 SIM; 39.478 NAO; 1.113 vazios [gap: students_contact] |
 | ENDTEL_OBSERVACAO | defer |  |  |  |  |  | no_canonical_destination [gap: students_contact] |
 | ENDTEL_ORIGEM | ignore |  |  |  |  |  | legacy_flag |
 | ID | ignore |  |  |  |  |  | legacy_audit_only |
@@ -1160,7 +1160,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Pagamento_Nome | map | agreements.reference | text | collapse_ws |  |  | rotulo do lote de acordo ('Acordo 2024': 557, 'Acordo 2023': 438, 'Acordo 2025': 186; 73 rotulos em 1.570 linhas). Agrupa lotes, nao identifica acordo - a identidade continua em agreements.legacy_id (TBL_PAGAMENTO.ID); nenhuma coluna escrevia em agreements.reference. Enquanto 'proposed', a carga exige --allow-proposed agreements [status: proposed] |
 | Pagamento_USUARIOCRIACAO | defer |  |  |  |  |  | user_link_requires_review |
 | Pagamento_StatusAcordo | ignore |  |  |  |  |  | empty_column |
-| Pagamento_DataFechamento | review |  |  |  |  |  | 1.497 preenchidos; viraria agreements.closed_at [gap: agreements_closed_at] |
+| Pagamento_DataFechamento | review |  |  |  |  |  | 1.497 de 1.572 preenchidos; agreements.closed_at existe desde a 0010 e a coluna segue em revisao porque nao esta definido se a data e o fechamento do acordo (parcelamento encerrado) ou a assinatura do contrato [gap: agreements_closed_at] |
 | Pagamento_SucumbenciaTotal | defer |  |  |  |  |  | agreement_attrs_not_modeled |
 | Pagamento_SucumbenciaResto | defer |  |  |  |  |  | agreement_attrs_not_modeled |
 | Pagamento_SucumbenciaTipo | defer |  |  |  |  |  | agreement_attrs_not_modeled |
@@ -1506,7 +1506,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
-| ID | review |  |  |  |  |  | users nao tem legacy_id; entrada exige politica de credencial [gap: users_legacy_import] |
+| ID | review |  |  |  |  |  | users.legacy_* existe desde a 0010 (28 ids); a entrada continua bloqueada porque users.password_hash e NOT NULL e a senha do legado nao migra [gap: users_legacy_import] |
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
 | USER_USUARIO | defer |  |  |  |  |  | 28 logins distintos; base para o email canonico |
 | USER_SENHA | ignore |  |  |  |  |  | secret_revoked |
@@ -1528,14 +1528,14 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | `installments_description` | installments nao tem descricao/tipo do debito (Divida_Listagem.Tipo_de_debito, Obs) | 2 |
 | `agreements_source_resolution` | resolvido (decisao de 2026-09-25, registrada no dicionario em 2026-10-22): agreements.legacy_id vem de TBL_PAGAMENTO; TBL_DIVIDA e TBL_DIVIDA_LISTAGEM ficam fora do canonico ate existir modelo de inadimplencia (entidade debts/debt_items) | 11 |
 | `agreements_type` | agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO) | 2 |
-| `agreements_closed_at` | agreements nao tem data de fechamento/assinatura | 1 |
+| `agreements_closed_at` | resolvido no schema pela migration 0010 (agreements.closed_at): a coluna existe e continua sem mapeamento porque a semantica do fechamento (acordo encerrado x contrato assinado) segue em revisao | 1 |
 | `schools_contact_address` | schools nao tem contato nem endereco; contacts e restrito a customers | 9 |
-| `students_contact` | students nao tem contato proprio; contacts e restrito a customers | 21 |
+| `students_contact` | resolvido no schema pela migration 0010 (student_contacts, espelho de contacts apontando para students): a carga da aba TBL_ENDTEL ainda nao esta mapeada e depende da decisao de identidade do aluno/responsavel | 21 |
 | `customers_address` | customers nao tem endereco estruturado | 7 |
 | `customers_document_type` | customers nao tem document_type (cpf/cnpj) exigido por CANONICAL_DATA_RULES.md | 1 |
 | `contacts_legacy_id` | resolvido pela migration 0009 (colunas legacy_* em contacts) e por scripts/backfill_legacy_provenance.py, que carimba os contatos ja gravados antes de a carga usar a chave legada | 0 |
 | `students_guardian_details` | students nao tem dados do responsavel (RG, profissao, estado civil) | 3 |
-| `users_legacy_import` | users exige email e password_hash; importacao do legado precisa de politica de credencial | 1 |
+| `users_legacy_import` | resolvido no schema pela migration 0010 (users.legacy_source/legacy_table/legacy_id + indice unico): a importacao continua presa a politica de credencial, porque users.password_hash e NOT NULL e a senha do legado nao migra | 1 |
 
 ### installments_description
 
@@ -1557,7 +1557,7 @@ Colunas: `TBL_PAGAMENTO.Pagamento.Tipo`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista
 
 ### agreements_closed_at
 
-agreements nao tem data de fechamento/assinatura
+resolvido no schema pela migration 0010 (agreements.closed_at): a coluna existe e continua sem mapeamento porque a semantica do fechamento (acordo encerrado x contrato assinado) segue em revisao
 
 Colunas: `TBL_PAGAMENTO.Pagamento_DataFechamento`.
 
@@ -1569,7 +1569,7 @@ Colunas: `TBL_AUXSUBIR.Endereco`, `TBL_AUXSUBIR.Numero`, `TBL_AUXSUBIR.Complemen
 
 ### students_contact
 
-students nao tem contato proprio; contacts e restrito a customers
+resolvido no schema pela migration 0010 (student_contacts, espelho de contacts apontando para students): a carga da aba TBL_ENDTEL ainda nao esta mapeada e depende da decisao de identidade do aluno/responsavel
 
 Colunas: `TBL_ALUNO.Aluno.Telefone`, `TBL_ALUNO.Aluno.Endereco`, `TBL_CONTATO.Title`, `TBL_CONTATO.ID`, `TBL_CONTATO.Contato.Aluno.ID`, `TBL_CONTATO.Contato.Data`, `TBL_CONTATO.Contato.Hora`, `TBL_CONTATO.Contato.Tipo`, `TBL_CONTATO.Contato.Obs`, `TBL_CONTATO.Contato_DataValor`, `TBL_CONTATO.Contato.StatusTelefone`, `TBL_CONTATO.Contato.Telefone` e mais 9 coluna(s).
 
@@ -1593,7 +1593,7 @@ Colunas: `TBL_ALUNO.Aluno_RGResponsavel`, `TBL_ALUNO.Aluno_ResponsavelEstadoCivi
 
 ### users_legacy_import
 
-users exige email e password_hash; importacao do legado precisa de politica de credencial
+resolvido no schema pela migration 0010 (users.legacy_source/legacy_table/legacy_id + indice unico): a importacao continua presa a politica de credencial, porque users.password_hash e NOT NULL e a senha do legado nao migra
 
 Colunas: `TBL_USER.ID`.
 
@@ -1603,9 +1603,9 @@ Colunas: `TBL_USER.ID`.
 |---|---|---:|---|---|
 | `MAPPING_NOT_CONFIRMED` | `proposed` | 1 | TBL_PAGAMENTO | `TBL_PAGAMENTO.Pagamento_Nome` |
 | `REVIEW_REQUIRED` | `name_only_link_not_allowed` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.Responsavel_Financeiro` |
-| `REVIEW_REQUIRED` | `pending_policy` | 1 | TBL_ENDTEL | `TBL_ENDTEL.ENDTEL_ALUNO_ID` |
-| `REVIEW_REQUIRED` | `schema_gap_pending` | 2 | TBL_PAGAMENTO, TBL_USER | `TBL_PAGAMENTO.Pagamento_DataFechamento`, `TBL_USER.ID` |
+| `REVIEW_REQUIRED` | `pending_policy` | 2 | TBL_ENDTEL, TBL_PAGAMENTO | `TBL_ENDTEL.ENDTEL_ALUNO_ID`, `TBL_PAGAMENTO.Pagamento_DataFechamento` |
 | `REVIEW_REQUIRED` | `unreliable_document_source` | 1 | TBL_ALUNO | `TBL_ALUNO.Aluno.CPFResponsavel` |
+| `REVIEW_REQUIRED` | `user_import_requires_credential_reset` | 1 | TBL_USER | `TBL_USER.ID` |
 
 ## Motivos registrados
 
@@ -1634,7 +1634,7 @@ Colunas: `TBL_USER.ID`.
 | defer | `route_not_modeled` | 11 | roteirizacao de visitas nao esta modelada nesta fase |
 | defer | `school_config_not_modeled` | 4 | configuracao comercial da escola (tipo de acordo, contrato, origem) nao esta modelada |
 | defer | `school_fee_not_modeled` | 8 | tabela de taxas por escola/ano nao esta modelada nesta fase |
-| defer | `student_contact_not_modeled` | 5 | contato do aluno exige tabela propria; contacts e restrito a customers |
+| defer | `student_contact_load_pending` | 5 | student_contacts existe desde a 0010; a carga depende de mapear type/value/is_primary e resolver as 5.988 linhas sem tipo |
 | defer | `user_import_requires_credential_reset` | 30 | usuario do legado entra com email novo e senha redefinida; nunca importar credencial |
 | defer | `user_link_requires_review` | 5 | vinculo com usuario exige conciliacao; nunca por nome isolado |
 | ignore | `attachment_metadata` | 2 | referencia de anexo do Dataverse; arquivos nao migram nesta fase |
@@ -1647,9 +1647,9 @@ Colunas: `TBL_USER.ID`.
 | ignore | `secret_revoked` | 4 | segredo/credencial: nunca migrar e deve ser revogado na origem |
 | ignore | `staging_helper` | 5 | aba auxiliar de carga manual/planilha; nao representa entidade do dominio |
 | review | `name_only_link_not_allowed` | 1 | vinculo somente por nome nao e permitido; exige documento ou revisao assistida |
-| review | `pending_policy` | 1 | decisao de negocio pendente registrada na fase 2 |
-| review | `schema_gap_pending` | 2 | exige migration nova ou ajuste de schema antes da carga canonica |
+| review | `pending_policy` | 2 | decisao de negocio pendente registrada na fase 2 |
 | review | `unreliable_document_source` | 1 | documento do legado com falha de validacao; nao pode vincular automaticamente |
+| review | `user_import_requires_credential_reset` | 1 | usuario do legado entra com email novo e senha redefinida; nunca importar credencial |
 
 ## Avisos (nao bloqueiam)
 

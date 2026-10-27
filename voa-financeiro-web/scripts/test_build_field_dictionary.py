@@ -393,6 +393,32 @@ class RealDictionaryTests(unittest.TestCase):
         self.assertIn("name_only_link_not_allowed", reasons)
 
 
+class ClassDSchemaTests(unittest.TestCase):
+    """As lacunas de schema da classe D (migration `0010`) continuam no schema.
+
+    O dicionario ainda nao aponta para elas (as tres colunas de origem seguem em `review`), entao
+    uma remocao acidental de `0010` nao apareceria em nenhum outro teste: a carga continuaria verde
+    e a lacuna so reapareceria na proxima tentativa de mapear `TBL_ENDTEL`, `Pagamento_DataFechamento`
+    ou `TBL_USER.ID`.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.schema = parse_canonical_schema()
+
+    def test_agreements_has_closed_at(self) -> None:
+        self.assertIn("closed_at", self.schema.get("agreements", set()))
+
+    def test_student_contacts_holds_student_provenance(self) -> None:
+        self.assertIn("student_contacts", self.schema)
+        for column in ("student_id", "type", "value", "is_primary", "legacy_id"):
+            self.assertIn(column, self.schema["student_contacts"])
+
+    def test_users_has_the_legacy_key(self) -> None:
+        for column in ("legacy_source", "legacy_table", "legacy_id"):
+            self.assertIn(column, self.schema.get("users", set()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
