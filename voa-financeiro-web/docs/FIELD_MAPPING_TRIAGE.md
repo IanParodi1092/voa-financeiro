@@ -77,10 +77,35 @@ O gap `agreements_source_resolution` deixou de ser duvida: `agreements` sai de `
 
 | Aba | Coluna | Evidencia | Por que nao fechar |
 |---|---|---|---|
-| `TBL_ALUNO` | `Aluno.Responsavel_Financeiro` | 5.840 nomes distintos | nome nunca identifica cliente; falta fluxo de revisao assistida |
-| `TBL_ALUNO` | `Aluno.CPFResponsavel` | 1.091 CPFs invalidos (`DOCUMENT_INVALID`), 447 repeticoes | documento invalido nao pode vincular `customers` sozinho |
+| `TBL_ALUNO` | `Aluno.Responsavel_Financeiro` | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so; 380 nomes coincidem com `customers.full_name` mas 111 casam com 2+ clientes | nome nunca identifica cliente; nenhum cliente tem CPF, entao nao ha chave para desempatar |
+| `TBL_ALUNO` | `Aluno.CPFResponsavel` | 6.644 preenchidos: 5.560 validos, 1.084 invalidos (`DOCUMENT_INVALID`), 5.095 distintos, 424 compartilhados por 2+ alunos | nenhum dos 5.095 CPFs existe em `customers` (2.138 documentos, todos CNPJ de `TBL_CLIENTE`): o vinculo so existiria criando 5.095 clientes novos |
 
 Essas duas sao tambem a guarda do dicionario: `scripts/test_build_field_dictionary.py::test_open_decisions_stay_blocked` exige que `unreliable_document_source`, `pending_policy` e `name_only_link_not_allowed` continuem como itens de politica. Trocar para `defer` quebra o teste - e a intencao do teste e impedir que a pendencia suma sem decisao.
+
+### Evidencia medida no lote `4609c071` (2026-10-27)
+
+Leitura somente leitura de `migration_rows` (`source_sheet = 'TBL_ALUNO'`) cruzada com `students` e `customers`. Cobertura das duas colunas em 6.652 linhas: 6.350 com nome (95,5%), 6.644 com CPF (99,9%), 6.343 com os dois, 7 so com nome e 1 sem nenhum.
+
+| Metrica | Valor |
+|---|---:|
+| Nomes de responsavel preenchidos | 6.350 |
+| Nomes distintos (texto original) | 5.828 |
+| Nomes usados por um aluno so | 5.352 |
+| CPFs preenchidos | 6.644 |
+| CPFs validos (digito verificador) | 5.560 |
+| CPFs invalidos (`DOCUMENT_INVALID`) | 1.084 |
+| CPFs validos distintos | 5.095 |
+| CPFs validos usados por 2+ alunos | 424 (889 alunos, maximo 4 por CPF) |
+| CPFs validos com 2+ grafias de nome | 45 |
+| Alunos com `customer_id` hoje | 0 de 6.641 |
+
+O que decide a politica nao e o volume, e o estado do lado canonico:
+
+1. **Nao existe nenhum CPF em `customers`.** Os 2.138 preenchimentos de `document_number` sao todos de 14 digitos (CNPJ) e todos vem de `TBL_CLIENTE`; zero CPF de 11 digitos. Logo o cruzamento CPF do responsavel x `customers.document_number` da **0 alunos vinculaveis**: qualquer politica de CPF cria cadastro novo, nao reaproveita cliente.
+2. **O pagador dos acordos hoje e o aluno, nao o responsavel.** Os 1.568 clientes criados de `TBL_PAGAMENTO` nao tem documento e foram nomeados com `Pagamento.Nome_Aluno`; 1.123 desses nomes batem exatamente com `students.full_name`, e os 1.505 acordos apontam para eles. Criar cliente a partir do CPF do responsavel produziria um segundo cadastro da mesma relacao economica, sem chave de reconciliacao com o primeiro.
+3. **Nome nao desempata.** 380 nomes de responsavel coincidem com algum `customers.full_name` (395 alunos), mas 111 desses nomes casam com 2+ clientes; e 45 CPFs validos aparecem com 2+ grafias (`SILVIA ASSIS VIEIRA.` x `SILVIA ASSIS VIEIRA`, `ELAINE CRISTINA ROCHA` x `ELAINE CRISTINA ROCHA DE ALBUQUERQUE`), o que e ruido de digitacao, nao homonimia. As duas condicoes de um vinculo "seguro" (CPF valido nao compartilhado + nome concordante) existem em 0 alunos quando o alvo e `customers`.
+4. **O caminho sem CPF tambem e parcial.** 1.153 alunos (17,4%) tem ao menos um acordo com cliente resolvido - esse vinculo ja esta no canonico via `agreements.student_id` + `agreements.customer_id`, e 245 desses alunos tem 2+ clientes distintos entre acordos (o mesmo aluno virou clientes diferentes por variacao de grafia no pagamento). Os 5.488 alunos restantes nao tem lado financeiro carregado.
+5. **O responsavel e uma pessoa, nao um cliente comercial.** No Dataverse (`_legacy-powerapps/.../DataSources/TBL_ALUNO.json`) o responsavel tem `cr04f_cpfdoresponsavel`, `cr04f_rgdoresponsavel`, `cr04f_profissaodoresponsavel`, `cr04f_estadocivildoresponsavel` e `cr04f_telefonedoaluno`; o canonico nao tem entidade de guardiao - `customers` e a tabela de quem paga contrato/escola, e o contato do aluno continua sem destino (`students_contact`, classe D).
 
 ## Classe D - exigem migration nova (6)
 
