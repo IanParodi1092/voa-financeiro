@@ -1,7 +1,7 @@
 # Triagem das pendencias `review` do dicionario (fase 2)
 
-- Data da triagem: `2026-10-22` (revisao `2026-10-27`: decisao da classe C, migrations `0010` e `0011`)
-- Status: **classes A, B, E e A' aplicadas** (23 das 31 colunas saiu de `review`); a classe A' entrou como `status: "proposed"` e vira `confirmed` quando o operador validar `agreements.reference`. A classe C foi decidida em 2026-10-27 (fica em `review`) e **reabriu na `0011`**: com a entidade `guardians`, as duas colunas do responsavel entraram como `proposed`. A classe D teve o schema fechado pela `0010` e a carga do contato do aluno (`TBL_ENDTEL`) mapeada na `0011`, tambem como `proposed`
+- Data da triagem: `2026-10-22` (revisao `2026-10-27`: decisao da classe C, migrations `0010`/`0011` e aprovacao das 11 propostas que sobravam)
+- Status: **todas as classes aplicadas e confirmadas** (29 das 31 colunas saiu de `review` e nenhuma `map` depende mais de aprovacao avulsa). A classe C foi decidida em 2026-10-27 (fica em `review`) e **reabriu na `0011`**: com a entidade `guardians`, as duas colunas do responsavel entraram como `proposed` e foram confirmadas pelo operador no mesmo dia. A classe D teve o schema fechado pela `0010` e a carga do contato do aluno (`TBL_ENDTEL`) mapeada na `0011`, tambem `proposed` e confirmada
 - Dicionario: `scripts/legacy_field_map.json` (60 abas, 856 colunas: 50 `map`, 79 `ignore`, 725 `defer`, 2 `review`)
 - Lote de staging consultado: `4609c071-03c3-47fb-beff-5c3bcad6367e` (`committed`, 546.346 linhas) no Postgres local
 - Relatorios de referencia: `docs/FIELD_MAPPING_DICTIONARY.md` (gerado), `docs/CANONICAL_LOAD_REPORT.md`, `docs/STAGING_VALIDATION_REPORT.md`
@@ -11,10 +11,10 @@ Este documento responde duas perguntas por coluna: **o que a coluna e** (com dad
 
 ## Leitura rapida
 
-- **2 colunas continuam em `review`** de 31 triadas: `Pagamento_DataFechamento` (fechamento x assinatura) e `TBL_USER.ID` (politica de credencial). As classes A, B, E e A' fecharam 23 e a `0011` fechou as 3 ultimas que ainda tinham `review` (nome e CPF do responsavel, `ENDTEL_ALUNO_ID`) - todas como `proposed`, nao como `confirmed`, entao a carga so grava com `--allow-proposed`.
-- O portao continua em `exit 2`, com composicao maior: `11` itens `MAPPING_NOT_CONFIRMED` (`Pagamento_Nome`, 5 do guardiao e 5 do contato do aluno) + `2` `REVIEW_REQUIRED`. O que mudou e o que ele mede: as colunas estao descritas no dicionario e a pendencia passou a ser **aprovacao**, nao ausencia de destino.
-- A classe A' saiu como `proposed` (decisao do operador em 2026-10-22) e **muda o proximo carregamento**: enquanto o status nao virar `confirmed`, a carga precisa de `--allow-proposed agreements`, senao `agreements` fica bloqueado por `mapping_not_confirmed` e `installments`/`payments` caem junto por dependencia (medido: `80.929` linhas reusadas em vez de `104.709`). Com a flag, `inserted=0` e `reused=104.709` continuam valendo.
-- `guardians` e `student_contacts` seguem o mesmo padrao: sem as flags novas as duas ficam `blocked: mapping_not_confirmed` e a rodada de hoje (`--allow-proposed agreements`) continua identica a de antes da `0011` - `considered=121.991`, `loaded=104.709`, `inserted=0`, exit `4` pelo `asaas_charges`. Sem nenhuma flag a rodada cai para `89.349` avaliadas / `80.929` carregadas, porque `agreements` bloqueado derruba `installments` e `payments`. Com `--allow-proposed agreements,guardians,student_contacts`: `176.205` avaliadas, `150.018` carregadas, sendo `6.347` guardioes e `38.962` contatos de aluno.
+- **2 colunas continuam em `review`** de 31 triadas: `Pagamento_DataFechamento` (fechamento x assinatura) e `TBL_USER.ID` (politica de credencial). As classes A, B, E e A' fecharam 23, a `0011` fechou as 3 ultimas que ainda tinham `review` (nome e CPF do responsavel, `ENDTEL_ALUNO_ID`) e em 2026-10-27 o operador **confirmou os 11 `proposed`** que restavam: `Pagamento_Nome`, as 5 do guardiao e as 5 do contato do aluno.
+- O portao caiu de 13 para **`2` itens, os dois `REVIEW_REQUIRED`**: nao ha mais nenhum `MAPPING_NOT_CONFIRMED`, entao a carga nao depende de `--allow-proposed`. O que sobra nao e mapeamento em aberto, sao duas decisoes de produto (data de fechamento do acordo e credencial de usuario).
+- A classe A' foi confirmada em 2026-10-27 depois da validacao em tela de `agreements.reference`: a cadeia financeira (`agreements` -> `installments` -> `payments`) voltou a carregar na rodada padrao, sem flag nenhuma.
+- `guardians` e `student_contacts` seguem o mesmo caminho e ja estao confirmados: a rodada padrao (`python scripts\load_canonical_batch.py`, sem `--allow-proposed`) avalia `176.205` linhas, carrega `150.018` (`104.709` de antes + `6.347` guardioes + `38.962` contatos de aluno) e sai `4` apenas pelo `asaas_charges`, que continua sem colunas obrigatorias no dicionario. Antes da `0011` a mesma rodada padrao fazia `89.349`/`80.929`, porque `agreements` bloqueado derrubava `installments` e `payments`.
 - `TBL_DIVIDA` (6.868 linhas) e `TBL_DIVIDA_LISTAGEM` (42.886 linhas) continuam fora do canonico (`no_mapping` no relatorio da carga) e agora estao registradas assim no dicionario (`defer: no_canonical_destination`). Isso nao e pendencia de dicionario: e escopo - inadimplencia nao esta modelada.
 
 ## Resumo por classe
@@ -22,16 +22,16 @@ Este documento responde duas perguntas por coluna: **o que a coluna e** (com dad
 | Classe | Itens | O que e | Decisao | Status |
 |---|---:|---|---|---|
 | A | 6 | semantica agora comprovada, sem destino canonico | `ignore`/`defer` com motivo do vocabulario | aplicada |
-| A' | 1 | semantica comprovada **e** destino canonico livre | `map: agreements.reference` com `status: proposed` | aplicada como `proposed` (falta `confirmed`) |
+| A' | 1 | semantica comprovada **e** destino canonico livre | `map: agreements.reference` com `status: "confirmed"` (aprovado em 2026-10-27) | aplicada e confirmada |
 | B | 10 | herdam a decisao de 2026-09-25 (`agreements` vem de `TBL_PAGAMENTO`) | `defer: no_canonical_destination` | aplicada |
-| C | 2 | politica de identidade (nome e CPF do responsavel) | `map` para `guardians` com `status: proposed` (reaberta pela `0011`) | aplicada como `proposed` |
-| D | 6 | exigem migration ou dependem da classe B | migration (schema) + carga | 2 aplicadas na `0009`, 1 fechada por B, 3 no schema pela `0010`; `TBL_ENDTEL` e os dados do guardiao carregados na `0011` como `proposed` |
+| C | 2 | politica de identidade (nome e CPF do responsavel) | `map` para `guardians` com `status: "confirmed"` (reaberta pela `0011`, aprovada em 2026-10-27) | aplicada e confirmada |
+| D | 6 | exigem migration ou dependem da classe B | migration (schema) + carga | 2 aplicadas na `0009`, 1 fechada por B, 3 no schema pela `0010`; `TBL_ENDTEL` e os dados do guardiao carregados e confirmados na `0011` |
 | E | 6 | endereco de escola: semantica clara, tabela inexistente | `defer: address_not_modeled` | aplicada |
 
 ### O que esta aplicado (2026-10-22)
 
 - 22 colunas reescritas em `scripts/legacy_field_map.json` (A + B + E), com nota de evidencia em cada uma e sem mudar nenhum `map` existente.
-- Classe A' aplicada em 2026-10-22: `TBL_PAGAMENTO.Pagamento_Nome` virou `map: agreements.reference` com `type: text`, `normalization: collapse_ws` e `status: "proposed"` (23a coluna fora de `review`; nenhuma outra coluna escreve em `agreements.reference`).
+- Classe A' aplicada em 2026-10-22 e **confirmada em 2026-10-27**: `TBL_PAGAMENTO.Pagamento_Nome` virou `map: agreements.reference` com `type: text`, `normalization: collapse_ws` e `status: "confirmed"` (23a coluna fora de `review`; nenhuma outra coluna escreve em `agreements.reference`).
 - `TBL_DIVIDA_LISTAGEM.ID` saiu de `review` junto com a classe B: com a aba fora do canonico o id do item nao tem destino, entao o gap `installments_legacy_id` nao se aplica a ele.
 - Gap `agreements_source_resolution` mantido como referencia, com descricao reescrita ("resolvido em 2026-09-25"); gaps `installments_legacy_id` e `contacts_legacy_id` marcados como resolvidos pela `0009` + backfill.
 - Migration `apps/api/migrations/0009_contacts_installments_legacy_provenance.sql`: colunas `legacy_source/legacy_table/legacy_id` + indice unico em `contacts` e `installments`.
@@ -40,17 +40,17 @@ Este documento responde duas perguntas por coluna: **o que a coluna e** (com dad
 ### O que esta aplicado (2026-10-27)
 
 - `apps/api/migrations/0010_class_d_schema_gaps.sql`: as tres lacunas de schema que sobravam da classe D - `agreements.closed_at`, a tabela `student_contacts` (espelho de `contacts`, com `student_id` e proveniencia legada) e `users.legacy_source/legacy_table/legacy_id` + indice unico.
-- A `0010` e **inerte para a carga**, como a `0009`: nenhuma coluna do dicionario passou a apontar para o schema novo, entao a rodada `--allow-proposed agreements` continua em `inserted=0`, `reused=104.709` e o portao continua com os mesmos 6 itens. O que muda e o motivo do bloqueio: as tres colunas sairam de `schema_gap_pending`/`student_contact_not_modeled` para `pending_policy`, `user_import_requires_credential_reset` e `student_contact_load_pending`.
+- A `0010` e **inerte para a carga**, como a `0009`: nenhuma coluna do dicionario passou a apontar para o schema novo, entao a rodada `--allow-proposed agreements` continuou em `inserted=0`, `reused=104.709` e o portao com os mesmos 6 itens (numeros de antes da `0011`; hoje a rodada padrao faz `176.205`/`150.018`). O que muda e o motivo do bloqueio: as tres colunas sairam de `schema_gap_pending`/`student_contact_not_modeled` para `pending_policy`, `user_import_requires_credential_reset` e `student_contact_load_pending`.
 - Gap `students_contact` reescrito como resolvido no schema (a carga da aba `TBL_ENDTEL` e outra etapa); gaps `agreements_closed_at` e `users_legacy_import` idem.
 - Decisao de identidade da classe C registrada: as duas colunas ficam em `review` (secao da classe C). Essa decisao foi revista pela `0011` - ver a secao seguinte.
 
 ### O que esta aplicado (2026-10-27, migration `0011`)
 
 - `apps/api/migrations/0011_guardians_and_student_contact_status.sql`: cria `guardians` (filha de `students`, com `customer_id` nullable, nome/CPF/RG/estado civil/profissao e proveniencia legada) e adiciona `student_contacts.status`.
-- A `0011` **reabre a classe C**: `Aluno.Responsavel_Financeiro` e `Aluno.CPFResponsavel` sairam de `review` e viraram `map` para `guardians` com `status: "proposed"`. O responsavel deixa de ser candidato a `customers` (era a razao do bloqueio) e passa a ter entidade propria; `customer_id` nasce nulo e `is_verified` falso.
-- `TBL_ENDTEL` deixou de ser aba `deferred` e virou entidade de `student_contacts` (`type`, `value`, `is_primary`, `status`), tambem `proposed`. A aba tem 47.562 linhas: 41.117 com tipo e valor, 457 com tipo e valor vazio, 5.988 vazias nas duas colunas e no status - por isso **nao** existe rotulo sintetico `unknown`: nao ha dado a gravar nessas 5.988.
-- A carga padrao **nao muda**: sem as flags novas, `guardians` e `student_contacts` ficam `blocked: mapping_not_confirmed` e a rodada `--allow-proposed agreements` segue `considered=121.991`, `loaded=104.709`, `inserted=0`, exit `4` pelo `asaas_charges` (sem nenhuma flag: `89.349`/`80.929`, porque `agreements` bloqueado derruba `installments`/`payments`).
-- Com `--allow-proposed agreements,guardians,student_contacts`: `6.347` guardioes (294 sem nome, 11 sem aluno) e `38.962` contatos de aluno (2.797 com aluno fora da carga, 5.389 sem tipo, 413 sem valor), ou `176.205` avaliadas / `150.018` carregadas. Segunda rodada `inserted=0`/`reused=150.018`: a chave legada segura a idempotencia.
+- A `0011` **reabre a classe C**: `Aluno.Responsavel_Financeiro` e `Aluno.CPFResponsavel` sairam de `review` e viraram `map` para `guardians`, abertas como `status: "proposed"` e **confirmadas pelo operador em 2026-10-27**. O responsavel deixa de ser candidato a `customers` (era a razao do bloqueio) e passa a ter entidade propria; `customer_id` nasce nulo e `is_verified` falso.
+- `TBL_ENDTEL` deixou de ser aba `deferred` e virou entidade de `student_contacts` (`type`, `value`, `is_primary`, `status`), tambem `proposed` e confirmado no mesmo dia. A aba tem 47.562 linhas: 41.117 com tipo e valor, 457 com tipo e valor vazio, 5.988 vazias nas duas colunas e no status - por isso **nao** existe rotulo sintetico `unknown`: nao ha dado a gravar nessas 5.988.
+- **A carga padrao mudou para melhor**: com os 11 `proposed` confirmados, a rodada sem flag nenhuma passou a ser a rodada completa - `considered=176.205`, `loaded=150.018`, `inserted=0`, `reused=150.018`, `exit 4` so pelo `asaas_charges`. Antes da aprovacao a mesma rodada fazia `121.991`/`104.709` com `--allow-proposed agreements` e `89.349`/`80.929` sem flag nenhuma.
+- Composicao dos `150.018`: os `104.709` de antes mais `6.347` guardioes (294 sem nome, 11 sem aluno) e `38.962` contatos de aluno (2.797 com aluno fora da carga, 5.389 sem tipo, 413 sem valor). Segunda rodada `inserted=0`/`reused=150.018`: a chave legada segura a idempotencia.
 - Gap `students_contact` e gap `students_guardian_details` reescritos como resolvidos (`0010`/`0011`). Vocabulario perdeu os tres motivos que ficaram sem uso (`student_contact_load_pending`, `unreliable_document_source`, `name_only_link_not_allowed`).
 
 
@@ -72,13 +72,13 @@ Nenhuma dessas seis colunas perde dado: o payload de staging guarda o valor orig
 
 | Aba | Coluna | Evidencia no lote | Decisao (aplicada em 2026-10-22) |
 |---|---|---|---|
-| `TBL_PAGAMENTO` | `Pagamento_Nome` | 1.570 de 1.572 preenchidos; 73 rotulos: `Acordo 2023`=557, `Acordo 2024`=438, `Acordo 2025`=186, `Acordo_2022`=99, `Acordo 1`=97, `acordo 2022`=84, `Acordo2024`=21, `Acordo pago na escola`=4 | rotulo do lote de acordo; `agreements.reference` existe no schema e nenhuma outra coluna escreve nela: `map: agreements.reference`, `type: text`, `normalization: collapse_ws`, `status: proposed` |
+| `TBL_PAGAMENTO` | `Pagamento_Nome` | 1.570 de 1.572 preenchidos; 73 rotulos: `Acordo 2023`=557, `Acordo 2024`=438, `Acordo 2025`=186, `Acordo_2022`=99, `Acordo 1`=97, `acordo 2022`=84, `Acordo2024`=21, `Acordo pago na escola`=4 | rotulo do lote de acordo; `agreements.reference` existe no schema e nenhuma outra coluna escreve nela: `map: agreements.reference`, `type: text`, `normalization: collapse_ws`, `status: confirmed` (aprovado em 2026-10-27) |
 
 Tres cuidados:
 
 1. 73 rotulos para 1.505 acordos: `reference` agrupa lotes (`Acordo 2024`), nao identifica acordo - a identidade continua em `agreements.legacy_id`, que vem de `TBL_PAGAMENTO.ID`.
 2. A grafia varia (`Acordo_2022`, `acordo 2022`, `Acordo2024`). Unificar em `Acordo 2022`/`Acordo 2024` e decisao de produto; `collapse_ws` apenas remove espaco repetido.
-3. Enquanto o status for `proposed`, `agreements` fica bloqueado na carga por `mapping_not_confirmed` (e `installments`/`payments` por dependencia) ate o operador passar `--allow-proposed agreements` ou remover o `status`. Nenhum dado muda numa rodada comum: os 1.505 acordos ja existem e sao reusados pela chave legada, entao `reference` so e preenchida com `--commit --enrich-reused` (o `UPDATE` usa `COALESCE(coluna, %s)` e nunca sobrescreve valor existente).
+3. O status foi confirmado em 2026-10-27 (validacao em tela dos rotulos em `agreements.reference`), entao `agreements` nao fica mais bloqueado por `mapping_not_confirmed` e `installments`/`payments` voltam a carregar sem flag. Como os 1.505 acordos ja existem e sao reusados pela chave legada, `reference` so e preenchida numa rodada com `--commit --enrich-reused` (o `UPDATE` usa `COALESCE(coluna, %s)` e nunca sobrescreve valor existente); a rodada padrao de 2026-10-27 nao preencheu nenhuma.
 
 ## Classe B - herdam a decisao de 2026-09-25 (10)
 
@@ -93,10 +93,10 @@ O gap `agreements_source_resolution` deixou de ser duvida: `agreements` sai de `
 
 | Aba | Coluna | Evidencia | Destino decidido |
 |---|---|---|---|
-| `TBL_ALUNO` | `Aluno.Responsavel_Financeiro` | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so; 380 nomes coincidem com `customers.full_name` mas 111 casam com 2+ clientes | `map: guardians.full_name` (`proposed`): o nome vira o guardiao do aluno, nunca um cliente |
-| `TBL_ALUNO` | `Aluno.CPFResponsavel` | 6.651 preenchidos: 5.560 validos, 1.084 invalidos (`DOCUMENT_INVALID`), 5.095 distintos, 424 compartilhados por 2+ alunos | `map: guardians.document_number` (`proposed`): documento do guardiao, gravado como esta na origem e nunca usado para vincular `customers` |
+| `TBL_ALUNO` | `Aluno.Responsavel_Financeiro` | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so; 380 nomes coincidem com `customers.full_name` mas 111 casam com 2+ clientes | `map: guardians.full_name` (`confirmed` em 2026-10-27): o nome vira o guardiao do aluno, nunca um cliente |
+| `TBL_ALUNO` | `Aluno.CPFResponsavel` | 6.651 preenchidos: 5.560 validos, 1.084 invalidos (`DOCUMENT_INVALID`), 5.095 distintos, 424 compartilhados por 2+ alunos | `map: guardians.document_number` (`confirmed` em 2026-10-27): documento do guardiao, gravado como esta na origem e nunca usado para vincular `customers` |
 
-Essas duas eram a guarda do dicionario: `scripts/test_build_field_dictionary.py::test_open_decisions_stay_blocked` exigia `unreliable_document_source` e `name_only_link_not_allowed` como itens de politica. Com `guardians` a guarda mudou de lugar: os testes `test_class_c_reopens_as_proposed_with_guardians` e `test_student_contacts_load_is_proposed` agora exigem que as colunas continuem `map` + `proposed` - ou seja, que ninguem as marque como `confirmed` sem a aprovacao do operador.
+Essas duas eram a guarda do dicionario: `scripts/test_build_field_dictionary.py::test_open_decisions_stay_blocked` exigia `unreliable_document_source` e `name_only_link_not_allowed` como itens de politica. Com `guardians` a guarda mudou de lugar e depois foi aprovada: `test_class_c_reopens_with_guardians` e `test_student_contacts_load_is_confirmed` exigem `map` + `confirmed` nas 10 colunas, e `test_no_mapping_is_left_unconfirmed` exige que o portao nao volte a listar `MAPPING_NOT_CONFIRMED`.
 
 ### Evidencia medida no lote `4609c071` (2026-10-27)
 
@@ -128,9 +128,9 @@ O que decide a politica nao e o volume, e o estado do lado canonico:
 **Reabertura (2026-10-27, migration `0011`):** `guardians` existe, entao a condicao foi cumprida e as duas colunas sairam de `review`. O que muda na pratica:
 
 1. O destino **nao** e `customers`: `Aluno.Responsavel_Financeiro` vira `guardians.full_name` e `Aluno.CPFResponsavel` vira `guardians.document_number`, sempre com `customer_id` nulo e `is_verified` falso. Nenhum cliente novo nasce e `students.customer_id` continua vazio.
-2. Os outros atributos do responsavel que a origem ja tem (`Aluno_RGResponsavel`, `Aluno_ResponsavelEstadoCivil`, `Aluno_ResponsavelProfissao`) saem do gap `students_guardian_details` e entram em `guardians.document_rg`/`marital_status`/`occupation`, tambem `proposed`.
-3. A carga entra como `proposed`: `6.347` guardioes gravados em rodada com `--allow-proposed guardians` (294 linhas sem nome e 11 sem aluno ficam de fora). Sem a flag, `guardians` fica `blocked: mapping_not_confirmed` e nada e gravado.
-4. O que ainda falta para `confirmed` e a aprovacao do operador sobre o **nome**: 380 nomes de responsavel coincidem com `customers.full_name` e 111 desses casam com 2+ clientes. Como o guardiao nao aponta para `customers`, essa duvida nao bloqueia mais a carga - ela so decide se o guardiao pode ser promovido a cliente na conciliacao assistida.
+2. Os outros atributos do responsavel que a origem ja tem (`Aluno_RGResponsavel`, `Aluno_ResponsavelEstadoCivil`, `Aluno_ResponsavelProfissao`) saem do gap `students_guardian_details` e entram em `guardians.document_rg`/`marital_status`/`occupation`, tambem confirmados em 2026-10-27.
+3. A carga entrou como `proposed` e foi **confirmada pelo operador em 2026-10-27**: `6.347` guardioes gravados (294 linhas sem nome e 11 sem aluno ficam de fora). Sem a confirmacao, `guardians` ficava `blocked: mapping_not_confirmed` e nada era gravado.
+4. A duvida que existia sobre o **nome** nao bloqueia mais a carga e continua aberta para a conciliacao assistida: 380 nomes de responsavel coincidem com `customers.full_name` e 111 desses casam com 2+ clientes. Como o guardiao nao aponta para `customers`, isso so decide se o guardiao pode ser promovido a cliente depois.
 
 A evidencia que sustentava o bloqueio continua valida e explica por que o destino e `guardians` e nao `customers`:
 
@@ -141,7 +141,7 @@ A evidencia que sustentava o bloqueio continua valida e explica por que o destin
 | `TBL_CLIENTEENDTEL` | `ID` | `contacts_legacy_id` | 54.782 ids; 46.829 contatos carregados | **resolvido**: `contacts.legacy_*` + indice unico na `0009`, carimbado pelo backfill e mapeado com `provides_legacy_id_for: contacts` |
 | `TBL_PAGAMENTO_LISTAGEM` | `ID` | `installments_legacy_id` | 15.535 ids distintos; 15.259 parcelas carregadas | **resolvido**: `installments.legacy_*` + indice unico na `0009`, carimbado pelo backfill e mapeado com `provides_legacy_id_for: installments` |
 | `TBL_PAGAMENTO` | `Pagamento_DataFechamento` | `agreements_closed_at` | 1.497 de 1.572 preenchidos | **schema resolvido na `0010`**: `agreements.closed_at`; a coluna fica em `review: pending_policy` ate definir se a data e fechamento do acordo ou assinatura |
-| `TBL_ENDTEL` | `ENDTEL_ALUNO_ID` | `students_contact` | 47.562 linhas, 6.894 alunos, 44.764 com aluno resolvido | **resolvido e carregado na `0011`**: `student_contacts` (0010) ganhou `status` e a aba virou entidade com `type`/`value`/`is_primary`/`status` como `proposed`; `contacts` nao servia porque `customer_id` e `NOT NULL` |
+| `TBL_ENDTEL` | `ENDTEL_ALUNO_ID` | `students_contact` | 47.562 linhas, 6.894 alunos, 44.764 com aluno resolvido | **resolvido, carregado e confirmado na `0011`**: `student_contacts` (0010) ganhou `status` e a aba virou entidade com `type`/`value`/`is_primary`/`status`, aprovados em 2026-10-27; `contacts` nao servia porque `customer_id` e `NOT NULL` |
 | `TBL_USER` | `ID` | `users_legacy_import` | 28 usuarios | **schema resolvido na `0010`**: `users.legacy_*` + indice unico; a entrada continua presa a politica de credencial (`password_hash` e `NOT NULL` e a senha do legado nao migra) |
 | `TBL_DIVIDA_LISTAGEM` | `ID` | `installments_legacy_id` | 42.886 ids distintos | **fechado pela classe B**: com a aba fora do canonico a coluna virou `defer: no_canonical_destination` e nao precisa de coluna nova |
 
@@ -182,14 +182,14 @@ Proposta: `defer: address_not_modeled`, mantendo o gap `schools_contact_address`
 | + `0009` + backfill (`contacts`/`installments.legacy_id`) | 6 | 6 | exit `2` |
 | + A' com `status: "proposed"` | 5 | 6 (5 `review` + 1 `MAPPING_NOT_CONFIRMED`) | exit `2` |
 | + `0010` (schema da classe D, com as 3 colunas ainda em `review`) | 5 | 6 | exit `2` |
-| + `0011` (classe C reaberta + carga de `TBL_ENDTEL`) | 2 | 13 (11 `MAPPING_NOT_CONFIRMED` + 2 `REVIEW_REQUIRED`) | exit `2` - **estado atual** |
-| + A' confirmada | 2 | 12 | exit `2` |
-| + `guardians` e `student_contacts` confirmados | 2 | 2 | exit `2` |
+| + `0011` (classe C reaberta + carga de `TBL_ENDTEL`, tudo `proposed`) | 2 | 13 (11 `MAPPING_NOT_CONFIRMED` + 2 `REVIEW_REQUIRED`) | exit `2` |
+| + A' confirmada (2026-10-27) | 2 | 12 | exit `2` |
+| + `guardians` e `student_contacts` confirmados (2026-10-27) | 2 | 2 (so `REVIEW_REQUIRED`) | exit `2` - **estado atual** |
 | + carga de `Pagamento_DataFechamento` e `users.legacy_id` | 0 | 0 | exit `0` |
 
-Numeros medidos no estado atual: `50 map`, `79 ignore`, `725 defer`, `2 review`, `0` problema estrutural, `0` divergencia de staging, `1` aviso (`MULTIPLE_LEGACY_ID_PROVIDERS` em `customers`); o portao lista 11 `MAPPING_NOT_CONFIRMED` (`TBL_PAGAMENTO.Pagamento_Nome`, 5 de `guardians` e 5 de `student_contacts`) e 2 `REVIEW_REQUIRED` (`Pagamento_DataFechamento` e `TBL_USER.ID`).
+Numeros medidos no estado atual: `50 map`, `79 ignore`, `725 defer`, `2 review`, `0` problema estrutural, `0` divergencia de staging, `1` aviso (`MULTIPLE_LEGACY_ID_PROVIDERS` em `customers`); o portao lista **2 `REVIEW_REQUIRED`** (`TBL_PAGAMENTO.Pagamento_DataFechamento` e `TBL_USER.ID`) e nenhum `MAPPING_NOT_CONFIRMED`.
 
-O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exige que toda coluna `NOT NULL` sem `default` esteja coberta por `map`/`links`. O portao mede a qualidade do dicionario - e o lote de 2026-09-25 foi carregado com ele ainda fechado. O que a `0011` muda e a **flag** da carga: enquanto `Pagamento_Nome`, `guardians` e `student_contacts` estiverem `proposed`, a rodada completa precisa de `--allow-proposed agreements,guardians,student_contacts`. Os 13 itens do portao deixaram de ser falta de destino: sao aprovacao pendente (11) e duas decisoes de produto (fechamento de acordo e credencial de usuario).
+O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exige que toda coluna `NOT NULL` sem `default` esteja coberta por `map`/`links`. O portao mede a qualidade do dicionario - e o lote de 2026-09-25 foi carregado com ele ainda fechado. Ate 2026-10-27 ele tambem cobrava aprovacao (`MAPPING_NOT_CONFIRMED`); com os 11 itens confirmados, os 2 que sobraram sao duas decisoes de produto (fechamento de acordo e credencial de usuario), nao falta de destino.
 
 ## Como foi aplicado
 
@@ -212,14 +212,20 @@ O portao nao bloqueia a carga canonica: `scripts/load_canonical_batch.py` so exi
 
 6. `apps/api/migrations/0010_class_d_schema_gaps.sql` (2026-10-27) + `npm run db:migrate` (`Applied migration 0010_class_d_schema_gaps.sql`, segunda rodada sem nada a aplicar). Verificacao em tres frentes: `\d student_contacts` (12 colunas, FK `ON DELETE CASCADE` para `students`, chave unica `(legacy_source, legacy_table, legacy_id)`), `agreements.closed_at` e `users.legacy_*` + `users_legacy_key_idx` presentes; aplicacao do zero num banco vazio (`voa_migtest`: os 10 arquivos em ordem, sem erro, depois `drop database`); e a carga `--allow-proposed agreements` inalterada (`considered=121.991`, `loaded=104.709`, `inserted=0`, exit `4` pelo `asaas_charges`).
 
-7. `apps/api/migrations/0011_guardians_and_student_contact_status.sql` (2026-10-27) + `npm run db:migrate` (`Applied migration 0011_guardians_and_student_contact_status.sql`). Verificacao: `guardians` com 16 colunas (FK `ON DELETE CASCADE` para `students`, `customer_id` nullable, indices `guardians_student_idx`/`guardians_customer_idx`, chave unica legada) e `student_contacts.status NOT NULL DEFAULT 'active'`; aplicacao do zero num banco vazio (os 11 arquivos em ordem, sem erro); dicionario revalidado (`50 map`, `79 ignore`, `725 defer`, `2 review`, `structural_issues: 0`, `staging_mismatches: 0`, exit `2` com 13 itens) e `test:python` com `214` testes.
+7. `apps/api/migrations/0011_guardians_and_student_contact_status.sql` (2026-10-27) + `npm run db:migrate` (`Applied migration 0011_guardians_and_student_contact_status.sql`). Verificacao: `guardians` com 16 colunas (FK `ON DELETE CASCADE` para `students`, `customer_id` nullable, indices `guardians_student_idx`/`guardians_customer_idx`, chave unica legada) e `student_contacts.status NOT NULL DEFAULT 'active'`; aplicacao do zero num banco vazio (os 11 arquivos em ordem, sem erro); dicionario revalidado (`50 map`, `79 ignore`, `725 defer`, `2 review`, `structural_issues: 0`, `staging_mismatches: 0`, exit `2` com 13 itens) e `test:python` com `214` testes (esse e o estado de entao; depois da aprovacao do passo 8 o portao fica com 2 itens e a suite com 215 testes).
 
-   Carga medida com `--allow-proposed agreements,guardians,student_contacts`:
+   Carga medida ainda com `--allow-proposed agreements,guardians,student_contacts` (as flags sairam no passo 8):
 
    - `guardians`: 6.347 gravados, 294 sem `Aluno.Responsavel_Financeiro`, 11 sem aluno (`LOAD_ROW_LINK_UNRESOLVED`);
-   - `student_contacts`: 38.962 gravados, 2.797 com aluno fora da carga, 5.389 sem tipo, 413 sem valor;
-   - segunda rodada `inserted=0`, `reused=150.018` (chave legada de `TBL_ENDTEL` e de `TBL_ALUNO` segurando a idempotencia);
-   - sem as flags novas, `guardians` e `student_contacts` ficam `blocked: mapping_not_confirmed` e a rodada `--allow-proposed agreements` volta a `considered=121.991`, `loaded=104.709`, `inserted=0`, exit `4` pelo `asaas_charges`; sem nenhuma flag, `89.349`/`80.929`.
+   - `student_contacts`: 38.962 gravados, 2.797 com aluno fora da carga, 5.389 sem tipo, 413 sem valor (5.695 dos gravados ficaram `inactive`);
+   - segunda rodada `inserted=0`, `reused=150.018` (chave legada de `TBL_ENDTEL` e de `TBL_ALUNO` segurando a idempotencia).
+
+8. `scripts/legacy_field_map.json` (2026-10-27): aprovacao do operador - os 11 `proposed` (`Pagamento_Nome`, as 5 de `guardians` e as 5 de `student_contacts`) viraram `status: "confirmed"`. Nenhuma coluna mudou de destino, so o status.
+
+   - `npm run db:field-dictionary` -> `50 map / 79 ignore / 725 defer / 2 review`, `0` problema estrutural; `npm run db:field-dictionary-check` -> exit `2` com **2 `REVIEW_REQUIRED`** e nenhum `MAPPING_NOT_CONFIRMED`;
+   - `npm run test:python` -> `215` testes (as assercoes de `proposed` viraram assercoes de `confirmed`, mais um teste que exige zero `MAPPING_NOT_CONFIRMED` no portao);
+   - rodada padrao, **sem nenhuma flag** (`python scripts\load_canonical_batch.py --commit`): `considered=176.205`, `loaded=150.018`, `inserted=0`, `reused=150.018`, exit `4` so pelo `asaas_charges`;
+   - `agreements.reference` continua `NULL` nas 1.505 linhas locais porque elas sao reusadas pela chave legada: o valor entra na insercao (banco novo, como o Supabase) ou numa rodada com `--commit --enrich-reused`.
 
 Ordem obrigatoria para qualquer ambiente novo: `db:migrate` (0009, 0010 e 0011) -> `db:backfill-legacy-provenance --commit` -> carga. Habilitar o provedor antes do backfill faz a carga recusar as linhas existentes como duplicidade.
 
@@ -230,8 +236,8 @@ Exemplo de edicao por classe (linha atual -> proposta):
 { "match": "Aluno_AnoDivida", "defer": "no_canonical_destination", "note": "ano de referencia da divida (2014..2022, com 1900/1969 invalidos); agreements nao tem coluna de ano" },
 { "match": "Aluno_Contrato", "ignore": "legacy_flag", "note": "booleano: 3754 false, 1 true, 2897 vazios" },
 
-// Classe A' (aplicada em 2026-10-22 como proposed) - TBL_PAGAMENTO
-{ "match": "Pagamento_Nome", "map": "agreements.reference", "type": "text", "normalization": "collapse_ws", "status": "proposed", "note": "rotulo do lote de acordo ('Acordo 2024'); nao identifica o acordo, isso e agreements.legacy_id" },
+// Classe A' (aplicada em 2026-10-22, confirmada em 2026-10-27) - TBL_PAGAMENTO
+{ "match": "Pagamento_Nome", "map": "agreements.reference", "type": "text", "normalization": "collapse_ws", "status": "confirmed", "note": "rotulo do lote de acordo ('Acordo 2024'); nao identifica o acordo, isso e agreements.legacy_id" },
 
 // Classe B - TBL_DIVIDA
 { "match": "ID", "defer": "no_canonical_destination", "gap": "agreements_source_resolution", "note": "TBL_DIVIDA fora do canonico: agreements vem de TBL_PAGAMENTO (decisao 2026-09-25)" },
@@ -243,11 +249,11 @@ Exemplo de edicao por classe (linha atual -> proposta):
 ## Decisoes pedidas ao operador
 
 1. **Classe A (6 colunas)** - **aceita** em 2026-10-22: `ignore`/`defer` como acima. Sao as unicas seis em que a semantica ficou evidente pelo dado (`Aluno_AnoDivida` e inferencia: "ano de referencia da divida").
-2. **Classe A' (`Pagamento_Nome`)** - **aceita** em 2026-10-22 como `map: agreements.reference` com `status: "proposed"`: o rotulo do lote passa a ter destino, mas a carga so o aplica com `--allow-proposed agreements` e o valor so entra em `agreements.reference` numa rodada `--commit --enrich-reused` (o `UPDATE` usa `COALESCE(coluna, %s)`, ou seja, nunca sobrescreve valor existente). Falta o passo final: validar a coluna em tela e remover o `status` para virar `confirmed`, o que tira o `MAPPING_NOT_CONFIRMED` do portao e a flag da carga.
+2. **Classe A' (`Pagamento_Nome`)** - **aceita** em 2026-10-22 como `map: agreements.reference` e **confirmada em 2026-10-27** apos a validacao da coluna em tela: `status: "confirmed"`, sem `MAPPING_NOT_CONFIRMED` no portao e sem `--allow-proposed agreements` na carga. O valor entra em `agreements.reference` na insercao (banco novo) ou numa rodada `--commit --enrich-reused` para linhas ja gravadas (o `UPDATE` usa `COALESCE(coluna, %s)`, ou seja, nunca sobrescreve valor existente).
 3. **Classe B (10 colunas)** - **aceita** em 2026-10-22: `TBL_DIVIDA`/`TBL_DIVIDA_LISTAGEM` registradas como fora do canonico (inadimplencia nao modelada) e gap `agreements_source_resolution` reescrito como resolvido. Se um dia dividas entrarem no canonico, o caminho e nova entidade `debts` + `debt_items` e as 10 colunas voltam a `map`.
 4. **Classe E (6 colunas)** - **aceita** em 2026-10-22: `defer: address_not_modeled`. Quando endereco de escola entrar, o caminho e migration de `school_addresses` (com CEP normalizado para 8 digitos); o `defer` de hoje nao impede.
-5. **Classe C (2 colunas)** - **reaberta em 2026-10-27 pela `0011`**: com a entidade `guardians`, as duas colunas viraram `map` (`guardians.full_name` e `guardians.document_number`) com `status: "proposed"`, e o registro da decisao anterior (mantidas em `review` em 2026-10-27, porque nenhum dos 5.095 CPFs validos existe em `customers` e nome nao desempata) fica como a justificativa de **nao** apontar para `customers`. A carga entra com `--allow-proposed guardians`; `customer_id` nulo e `is_verified` falso. **Falta** a aprovacao do operador para tirar o `proposed` (o portao ainda lista os 5 itens de `guardians` como `MAPPING_NOT_CONFIRMED`).
-6. **Classe D** - **schema fechado** em 2026-10-27: a `0009` saiu so com `installments.legacy_id` + `contacts.legacy_id` (as duas que davam rastreabilidade ao que ja estava carregado) e a `0010` criou `agreements.closed_at`, `student_contacts` e `users.legacy_*`. A `0011` fechou a carga do contato do aluno (`TBL_ENDTEL` -> `student_contacts`, `proposed`) e adicionou `student_contacts.status`. Restam em `review` duas colunas de origem por decisao de produto, nao por falta de destino: `Pagamento_DataFechamento` (fechamento x assinatura) e `TBL_USER.ID` (politica de credencial). Sem elas o portao fica em `2`, mas nada impede a operacao das telas.
+5. **Classe C (2 colunas)** - **reaberta e confirmada em 2026-10-27 pela `0011`**: com a entidade `guardians`, as duas colunas viraram `map` (`guardians.full_name` e `guardians.document_number`) e o status foi confirmado pelo operador no mesmo dia. O registro da decisao anterior (mantidas em `review` em 2026-10-27, porque nenhum dos 5.095 CPFs validos existe em `customers` e nome nao desempata) fica como a justificativa de **nao** apontar para `customers`. A carga entra na rodada padrao; `customer_id` nulo e `is_verified` falso.
+6. **Classe D** - **schema fechado** em 2026-10-27: a `0009` saiu so com `installments.legacy_id` + `contacts.legacy_id` (as duas que davam rastreabilidade ao que ja estava carregado) e a `0010` criou `agreements.closed_at`, `student_contacts` e `users.legacy_*`. A `0011` fechou a carga do contato do aluno (`TBL_ENDTEL` -> `student_contacts`, confirmada em 2026-10-27) e adicionou `student_contacts.status`. Restam em `review` duas colunas de origem por decisao de produto, nao por falta de destino: `Pagamento_DataFechamento` (fechamento x assinatura) e `TBL_USER.ID` (politica de credencial). Sem elas o portao fica em `2`, mas nada impede a operacao das telas.
 
 ## Reproducao das consultas
 

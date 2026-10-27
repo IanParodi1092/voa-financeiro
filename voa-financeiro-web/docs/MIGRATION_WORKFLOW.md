@@ -111,7 +111,7 @@ Codigos de saida: `0` ok, `1` problema estrutural no dicionario (destino inexist
 - `ignore`: coluna nao migra, com motivo do vocabulario fechado em `reason_codes`.
 - `defer`: coluna fica apenas no payload de staging nesta fase, tambem com motivo registrado.
 - `review`: depende de decisao de negocio; bloqueia a aprovacao do lote.
-- `status: "proposed"` marca mapeamento ainda nao confirmado (tambem bloqueia).
+- `status: "proposed"` marca mapeamento ainda nao confirmado (tambem bloqueia). Desde 2026-10-27 **nenhuma** regra esta `proposed`: as 11 ultimas (`Pagamento_Nome`, 5 de `guardians` e 5 de `student_contacts`) foram confirmadas pelo operador.
 - `provides_legacy_id_for`: define qual aba e a origem de `legacy_id` de cada tabela canonica. Duas abas disputando a mesma tabela geram o aviso `MULTIPLE_LEGACY_ID_PROVIDERS` no relatorio do dicionario (a provenance canonica e por aba, em `(legacy_source, legacy_table, legacy_id)`, entao varias abas podem alimentar a mesma tabela); `agreements` e provido por `TBL_PAGAMENTO` e `customers` por `TBL_CLIENTE` e `TBL_PAGAMENTO` (pagador sintetizado).
 - `schema_gaps`: lista de migrations necessarias (ex.: `installments_legacy_id`, `agreements_source_resolution`), referenciada coluna a coluna.
 - `links`: quando duas tabelas canonicas saem da mesma linha legada, `links` declara a coluna estrangeira e de qual tabela da mesma linha ela recebe o UUID (ex.: `payments.installment_id` vem de `row:installments` em `TBL_PAGAMENTO_LISTAGEM`, e `agreements.customer_id` vem de `row:customers` em `TBL_PAGAMENTO`).
@@ -125,7 +125,7 @@ A partir da raiz do novo projeto:
 ```powershell
 npm run db:load-canonical
 npm run db:load-canonical -- --json-out "$env:TEMP\voa_load_dry.json"
-npm run db:load-canonical-commit -- --allow-proposed contacts
+npm run db:load-canonical-commit
 ```
 
 `scripts/load_canonical_batch.py` le o lote de staging, resolve o dicionario e grava as tabelas canonicas. Regras:
@@ -134,7 +134,7 @@ npm run db:load-canonical-commit -- --allow-proposed contacts
 2. `--commit` e obrigatorio para escrever; sem ele o comando e um dry-run que calcula exatamente o mesmo plano, as mesmas contagens e os mesmos achados;
 3. nenhuma linha e fundida, renomeada ou apagada: a linha que o mapeamento nao satisfaz e descartada, contabilizada e reportada, e o payload de staging permanece intacto;
 4. idempotencia: tabelas com `legacy_source`/`legacy_table`/`legacy_id` reutilizam o UUID existente; tabelas sem essas colunas (`contacts`, `installments`) recebem um UUID deterministico derivado da linha de origem, entao rodar de novo nao duplica nada;
-5. mapeamento `status: "proposed"` so carrega com `--allow-proposed <tabela>` explicito do operador, e a aprovacao fica registrada em `reconciliation_reports.notes`;
+5. mapeamento `status: "proposed"` so carrega com `--allow-proposed <tabela>` explicito do operador, e a aprovacao fica registrada em `reconciliation_reports.notes`. Hoje a flag e so uma rede de seguranca: nenhuma coluna do dicionario esta `proposed`, e passar `--allow-proposed` nao muda nada;
 6. `--entities`, `--batch-id`, `--max-rows-per-sheet` e `--exclude-error-rows` existem para escopo, lote e ensaio controlado; `--set-batch-status` (so com `--commit`) muda o status do lote;
 7. chaves `UNIQUE` declaradas nas migrations viram um indice em memoria: a linha que repetiria uma chave ja gravada (ex.: `installments (agreement_id, installment_number)`) e descartada como `LOAD_DUPLICATE_ROW` **antes** de chegar ao banco, e o mesmo resultado aparece no dry-run e no `--commit`;
 8. cada `INSERT` roda dentro de um `SAVEPOINT`: violacao de `CHECK`, de `UNIQUE` parcial ou de chave estrangeira derruba apenas aquela linha (`LOAD_ROW_REJECTED`, com a mensagem do banco) e a transacao continua valida para as demais. Antes disso, uma unica linha invalida abortava a carga inteira.
@@ -181,7 +181,7 @@ registra `migration.batch.committed` em `audit_logs`, nada mais.
 Antes de aprovar o lote e rodar a carga com UUIDs novos:
 
 1. `python scripts/build_field_dictionary.py --from-staging` sai com codigo `0` (nenhuma coluna sem decisao, nenhum destino inexistente e nenhuma divergencia de coluna entre workbook e staging).
-2. `python scripts/build_field_dictionary.py --gate approved` sai com codigo `0`: nao existe coluna `review` nem mapeamento `status: "proposed"`. Hoje ele sai com codigo `2` e 6 pendencias.
+2. `python scripts/build_field_dictionary.py --gate approved` sai com codigo `0`: nao existe coluna `review` nem mapeamento `status: "proposed"`. Hoje ele sai com codigo `2` e 2 pendencias (`REVIEW_REQUIRED` em `Pagamento_DataFechamento` e `TBL_USER.ID`); nenhum `MAPPING_NOT_CONFIRMED` desde 2026-10-27.
 3. `migration_batches.status` do lote e alterado para aprovado somente depois do item 2.
 4. O banco canonico nao contem linhas de teste. Em 2026-09-24 existiam `schools` = 1 (legal_name `Escola Teste`) e `customers` = 1 (full_name `Ian`), ambas sem `legacy_source`/`legacy_table`/`legacy_id` e anteriores ao lote de staging; elas continuam no banco (identificaveis por `legacy_source IS NULL`) e devem ser removidas ou isoladas para nao poluir a reconciliacao:
 5. Senhas, tokens e API keys nao sao migrados; `TBL_BANCO.BANCO_APIKEY`, `TBL_USER.USER_SENHA` e `TBL_USER.USER_PASS` estao marcados como `secret_revoked` no dicionario.
@@ -375,28 +375,29 @@ tambem foram aplicadas do zero: `npm run test:integration` com `TEST_DATABASE_UR
 `applyMigrations` num schema temporario e passou com `21` testes, e `npm run db:migrate` no banco
 existente reporta `0 aplicadas, 9 ja aplicadas`.
 
-### Aplicado em 2026-10-22: classe A' como `proposed`
+### Aplicado em 2026-10-22 e confirmado em 2026-10-27: classe A'
 
 `TBL_PAGAMENTO.Pagamento_Nome` (`Acordo 2024`=438, `Acordo 2023`=557, `Acordo 2025`=186; 73 rotulos em
-1.570 linhas) passou a `map: agreements.reference` com `status: "proposed"` - era a unica coluna da
-triagem com semantica comprovada **e** destino livre no schema (`agreements.reference` existia e nenhuma
-coluna escrevia nela). O dicionario foi para `39 map` / `5 review` e o portao continua com `6` itens,
-agora `5 REVIEW_REQUIRED` + `1 MAPPING_NOT_CONFIRMED`.
+1.570 linhas) passou a `map: agreements.reference` - era a unica coluna da triagem com semantica
+comprovada **e** destino livre no schema (`agreements.reference` existia e nenhuma coluna escrevia
+nela). Em 2026-10-22 entrou como `status: "proposed"`; depois da validacao da coluna em tela, o
+operador confirmou em 2026-10-27 (`status: "confirmed"`), o que tirou o `MAPPING_NOT_CONFIRMED` do
+portao e devolveu a cadeia financeira a rodada padrao.
 
-Efeito medido na carga (dry-run, mesmo lote `4609c071`):
+Efeito medido na carga (dry-run do mesmo lote `4609c071`, ainda em 2026-10-22):
 
 | Rodada | Entidades prontas | Linhas reusadas |
 |---|---:|---:|
 | sem `--allow-proposed` | 5 (`schools`, `customers`, `contacts`, `students`, `asaas_customers`) | 80.929 |
 | com `--allow-proposed agreements` | 8 (acima + `agreements`, `installments`, `payments`) | 104.709 |
 
-Sem a flag, `agreements` fica com `mapping_not_confirmed (reference)` e `installments`/`payments` caem
-por `dependency_not_loaded`; `asaas_charges` segue bloqueado por colunas obrigatorias em qualquer das
-duas rodadas (achado pre-existente). Em nenhuma delas ha insercao (`inserted=0`): a proposta nao muda
-dado ate alguem rodar `--commit --enrich-reused`, quando `agreements.reference` e preenchida pelo
-`COALESCE` do enriquecimento (nunca sobrescreve valor existente). O bloqueio sem a flag e o desenho do
-loader: `status: proposed` so carrega com aprovacao explicita do operador. Falta remover o `status`
-(virar `confirmed`) depois de validar a coluna em tela - e o que devolve a rodada limpa sem flag.
+Naquele momento, sem a flag, `agreements` ficava com `mapping_not_confirmed (reference)` e
+`installments`/`payments` caiam por `dependency_not_loaded`. Hoje isso nao acontece mais: a rodada
+padrao e a rodada completa (ver a secao da `0011`). Em nenhuma das rodadas houve insercao
+(`inserted=0`): a proposta nao muda dado ate alguem rodar `--commit --enrich-reused`, quando
+`agreements.reference` e preenchida pelo `COALESCE` do enriquecimento (nunca sobrescreve valor
+existente) - as 1.505 linhas locais seguem com `reference` nula porque sao reusadas pela chave
+legada; num banco novo, como o Supabase, o valor entra na insercao.
 
 ### Aplicado na migration 0010 (2026-10-27)
 
@@ -413,9 +414,10 @@ As tres lacunas de schema que sobravam da classe D da triagem
 Tres pontos de operacao:
 
 1. A `0010` e **inerte para a carga**, igual a `0009`: nenhuma coluna do dicionario aponta para os
-   objetos novos. A rodada `--allow-proposed agreements` continua com `considered=121.991`,
+   objetos novos. A rodada `--allow-proposed agreements` continuou com `considered=121.991`,
    `loaded=104.709`, `inserted=0`, `reused=104.709` e `exit 4` (pelo `asaas_charges`), e o portao
-   continua com `6` itens (`5 REVIEW_REQUIRED` + `1 MAPPING_NOT_CONFIRMED`).
+   com `6` itens (`5 REVIEW_REQUIRED` + `1 MAPPING_NOT_CONFIRMED`). Esses numeros sao de antes da
+   `0011`/da aprovacao de 2026-10-27; hoje a rodada padrao faz `176.205`/`150.018`.
 2. O que mudou foi o **motivo** do bloqueio, nao a contagem: `Pagamento_DataFechamento` saiu de
    `schema_gap_pending` para `pending_policy` (fechamento do acordo x assinatura), `TBL_USER.ID`
    para `user_import_requires_credential_reset` (`password_hash` e `NOT NULL`, a senha do legado nao
@@ -443,13 +445,12 @@ entidade `guardians` (condicao de reabertura da classe C) e habilita a carga de 
 
 Quatro pontos de operacao:
 
-1. A `0011` **nao muda a carga padrao**. `guardians` e `student_contacts` entram como
-   `status: "proposed"`, entao sem as flags novas as duas ficam `blocked: mapping_not_confirmed` e a
-   rodada `--allow-proposed agreements` segue `considered=121.991`, `loaded=104.709`, `inserted=0`,
-   `exit 4` (`asaas_charges`); sem nenhuma flag sao `89.349` avaliadas / `80.929` carregadas, porque
-   `agreements` bloqueado derruba `installments` e `payments`. A rodada completa passou a ser
-   `--allow-proposed agreements,guardians,student_contacts` (`176.205` avaliadas / `150.018`
-   carregadas).
+1. A `0011` entrou com `guardians` e `student_contacts` como `status: "proposed"` e o operador
+   **confirmou as 10 colunas em 2026-10-27**, junto com `Pagamento_Nome` (classe A'). Com isso a
+   rodada padrao passou a ser a rodada completa: `considered=176.205`, `loaded=150.018`,
+   `inserted=0`, `reused=150.018`, `exit 4` so pelo `asaas_charges`. Os numeros anteriores ficam como
+   referencia: `121.991`/`104.709` com `--allow-proposed agreements` e `89.349`/`80.929` sem flag
+   nenhuma (quando `agreements` bloqueado derrubava `installments` e `payments`).
 2. A chave legada do guardiao e a da **linha do aluno** (`legacy_id = TBL_ALUNO.ID`,
    `legacy_table = TBL_ALUNO`), porque o legado nao tem id de responsavel. E o mesmo criterio de
    `TBL_PAGAMENTO`, onde o `ID` identifica `agreements` e o cliente sintetizado: duas entidades, uma
@@ -466,9 +467,10 @@ Quatro pontos de operacao:
 Validacao: `Applied migration 0011_guardians_and_student_contact_status.sql` no banco existente
 (segunda rodada sem nada a aplicar), colunas/FK/indices conferidos no `information_schema` e
 `pg_indexes`, aplicacao do zero num banco vazio (os `11` arquivos em ordem, sem erro), suite Python
-com `214` testes e dicionario em `50 map`, `79 ignore`, `725 defer`, `2 review`, `0` problema
-estrutural e `0` divergencia de staging. Carga medida com as flags: `6.347` guardioes e `38.962`
-contatos de aluno; segunda rodada `inserted=0`, `reused=150.018`.
+com `215` testes e dicionario em `50 map`, `79 ignore`, `725 defer`, `2 review`, `0` problema
+estrutural e `0` divergencia de staging; portao em `exit 2` com `2 REVIEW_REQUIRED` e **zero**
+`MAPPING_NOT_CONFIRMED`. Carga confirmada em 2026-10-27: `6.347` guardioes e `38.962` contatos de
+aluno na rodada padrao (sem flag), `inserted=0`/`reused=150.018` na segunda passada.
 
 ### Decisao de `billing_type` e `environment` das cobrancas
 
@@ -686,7 +688,7 @@ linhas e os 24 contatos) antes do cutover - a decisao e do operador.
 ## Pendencias de entrada ainda abertas
 
 - `asaas_charges`: sem `asaas_customer_id`, `environment`, `billing_type`, `due_date`, `status` e `value` (o status de boleto do legado nao tem mapa decidido);
-- `guardians` e `student_contacts`: carregados em 2026-10-27 com `--allow-proposed` (6.347 e 38.962 linhas), mas o portao ainda os lista como `MAPPING_NOT_CONFIRMED` - falta a aprovacao do operador para tirar o `proposed` do dicionario e da flag;
+- `guardians` e `student_contacts`: carregados em 2026-10-27 (`6.347` e `38.962` linhas) e confirmados no dicionario no mesmo dia - a rodada padrao ja os inclui e o portao nao os lista mais;
 - `users`: entrada exige politica de credencial (`TBL_USER` nao tem coluna mapeada);
 - `students.customer_id`: `TBL_ALUNO` nao tem vinculo com o cliente; os 6.641 alunos ficam sem `customer_id` ate essa decisao;
 - as 2 linhas de teste sem `legacy_source` (`schools` = 1, `customers` = 1) continuam no banco e poluem a reconciliacao (`schools` 76 no canonico para 75 linhas legadas).
@@ -757,9 +759,9 @@ python scripts\stage_legacy_workbook.py C:\caminho\VOA-FINANCEIRO.xlsx --json-ou
 # 2. dicionario: declarar a aba nova em scripts\legacy_field_map.json e conferir cobertura
 npm run db:field-dictionary-check
 
-# 3. carga do lote novo
-npm run db:load-canonical -- --batch-id <id-do-lote-novo> --allow-proposed installments,payments,asaas_charges
-npm run db:load-canonical-commit -- --batch-id <id-do-lote-novo> --allow-proposed installments,payments,asaas_charges
+# 3. carga do lote novo (as tabelas ja confirmadas carregam sem flag)
+npm run db:load-canonical -- --batch-id <id-do-lote-novo>
+npm run db:load-canonical-commit -- --batch-id <id-do-lote-novo>
 ```
 
 Pontos que ja estao resolvidos e nao precisam de decisao:

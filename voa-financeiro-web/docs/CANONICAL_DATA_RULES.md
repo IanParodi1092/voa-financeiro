@@ -21,8 +21,8 @@ A combinacao `(legacy_source, legacy_table, legacy_id)` deve ser unica quando a 
 | `contacts` (46.829 linhas), `installments` (15.259 linhas) | desde a `0009`, com backfill | mesma chave; as linhas gravadas antes da `0009` foram carimbadas por `npm run db:backfill-legacy-provenance` (recalcula o UUID deterministico da linha de origem) |
 | `payments`, `asaas_customers`, `asaas_charges` | nao tem | UUID deterministico `uuid5(carga, "aba:linha")`; o legado nao guarda id de pagamento/cobranca e o vinculo vem de `links` (`payments.installment_id = "row:installments"`) |
 | `users` | `legacy_source/legacy_table/legacy_id` desde a `0010` | ainda sem carga: `TBL_USER.ID` segue em `review` porque a entrada exige politica de credencial (`password_hash` e `NOT NULL` e a senha do legado nao migra) |
-| `student_contacts` | `legacy_source/legacy_table/legacy_id` desde a `0010` | carregado de `TBL_ENDTEL` com `status: proposed` no dicionario: 38.962 das 47.562 linhas entram por essa chave (as demais nao tem tipo/valor ou apontam para aluno fora da carga) |
-| `guardians` | `legacy_source/legacy_table/legacy_id` desde a `0011` | o legado nao tem id de responsavel: a chave e a da linha do aluno (`legacy_id = TBL_ALUNO.ID`, `legacy_table = TBL_ALUNO`), um guardiao por aluno, e a carga vem com `status: proposed` |
+| `student_contacts` | `legacy_source/legacy_table/legacy_id` desde a `0010` | carregado de `TBL_ENDTEL` com `status: confirmed` (aprovado em 2026-10-27): 38.962 das 47.562 linhas entram por essa chave (as demais nao tem tipo/valor ou apontam para aluno fora da carga) |
+| `guardians` | `legacy_source/legacy_table/legacy_id` desde a `0011` | o legado nao tem id de responsavel: a chave e a da linha do aluno (`legacy_id = TBL_ALUNO.ID`, `legacy_table = TBL_ALUNO`), um guardiao por aluno, `status: confirmed` desde 2026-10-27 |
 
 Regra de operacao: a chave legada so vale para uma tabela quando o dicionario declara
 `provides_legacy_id_for` nela. Criar a coluna sem carimbar as linhas antigas faz a carga seguinte

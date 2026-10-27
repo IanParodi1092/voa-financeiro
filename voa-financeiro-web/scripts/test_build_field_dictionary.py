@@ -391,11 +391,11 @@ class RealDictionaryTests(unittest.TestCase):
         self.assertIn("pending_policy", reasons)
         self.assertIn("user_import_requires_credential_reset", reasons)
 
-    def test_class_c_reopens_as_proposed_with_guardians(self) -> None:
+    def test_class_c_reopens_with_guardians(self) -> None:
         """A classe C saiu do `review` quando `guardians` nasceu na migration 0011.
 
-        O vinculo nao ficou confirmado: as colunas do responsavel entram como `proposed`, entao
-        gravar guardiao continua exigindo `--allow-proposed guardians` na carga.
+        O operador aprovou o vinculo em 2026-10-27, entao as cinco colunas do responsavel estao
+        `confirmed`: gravar guardiao nao depende mais de `--allow-proposed guardians`.
         """
         expected = {
             "Aluno.Responsavel_Financeiro": "guardians.full_name",
@@ -408,10 +408,10 @@ class RealDictionaryTests(unittest.TestCase):
         for source, target in expected.items():
             self.assertEqual(columns[source]["decision"], MAP, source)
             self.assertEqual(columns[source]["target"], target, source)
-            self.assertEqual(columns[source]["status"], "proposed", source)
+            self.assertEqual(columns[source]["status"], "confirmed", source)
 
-    def test_student_contacts_load_is_proposed(self) -> None:
-        """`TBL_ENDTEL` virou entidade de `student_contacts`, ainda sem aprovacao da carga."""
+    def test_student_contacts_load_is_confirmed(self) -> None:
+        """`TBL_ENDTEL` virou entidade de `student_contacts`, aprovada em 2026-10-27."""
         expected = {
             "ENDTEL_ALUNO_ID": "student_contacts.student_id",
             "ENDTEL_TIPO": "student_contacts.type",
@@ -423,7 +423,14 @@ class RealDictionaryTests(unittest.TestCase):
         for source, target in expected.items():
             self.assertEqual(columns[source]["decision"], MAP, source)
             self.assertEqual(columns[source]["target"], target, source)
-            self.assertEqual(columns[source]["status"], "proposed", source)
+            self.assertEqual(columns[source]["status"], "confirmed", source)
+
+    def test_no_mapping_is_left_unconfirmed(self) -> None:
+        """Nenhum `map` fica fora de `confirmed`: a carga nao precisa mais de aprovacao avulsa."""
+        unconfirmed = [
+            item for item in self.validation["policy"] if item["code"] == "MAPPING_NOT_CONFIRMED"
+        ]
+        self.assertEqual(unconfirmed, [])
 
 
 class ClassDSchemaTests(unittest.TestCase):

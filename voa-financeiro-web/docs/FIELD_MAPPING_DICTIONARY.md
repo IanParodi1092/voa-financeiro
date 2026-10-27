@@ -15,12 +15,12 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Colunas `review` | 2 |
 | Colunas `unmapped` | 0 |
 | Problemas estruturais | 0 |
-| Itens de politica pendentes | 13 |
+| Itens de politica pendentes | 2 |
 
 ## Portao de aprovacao
 
 - Estrutural: OK. Todo mapa aponta para tabela/coluna existente no schema canonico.
-- Aprovacao: BLOQUEADA (13 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
+- Aprovacao: BLOQUEADA (2 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
 
 ## Conferencia staging x workbook
 
@@ -116,7 +116,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 - Entidade canonica: students
 - Tipo de linha: entity
-- Observacoes: 6.652 alunos. students.enrollment_number e students.document_number ficam vazios: TBL_ALUNO nao tem matricula nem documento do aluno. A mesma linha alimenta `guardians` (reabertura da classe C pela 0011): o responsavel nao vira `customers`, vira guardiao do aluno, com `customer_id` nulo e `is_verified` falso.
+- Observacoes: 6.652 alunos. students.enrollment_number e students.document_number ficam vazios: TBL_ALUNO nao tem matricula nem documento do aluno. A mesma linha alimenta `guardians` (reabertura da classe C pela 0011, confirmada pelo operador em 2026-10-27): o responsavel nao vira `customers`, vira guardiao do aluno, com `customer_id` nulo e `is_verified` falso.
 - Colunas: 36 (map=9, ignore=21, defer=6, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
@@ -126,13 +126,13 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | ID | map | students.legacy_id | legacy_id | trim | sim |  |  |
 | Aluno.Escola.ID | map | students.school_id | reference | trim | sim | schools | resolve schools.legacy_id; 6.651 preenchidos em 72 escolas |
 | Aluno.Nome | map | students.full_name | name | collapse_ws | sim |  |  |
-| Aluno.Responsavel_Financeiro | map | guardians.full_name | name | collapse_ws | sim |  | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so. Nome nunca identifica cliente: vira o nome do guardiao, sem vinculo com customers (380 nomes coincidem com customers.full_name e 111 casam com 2+ clientes) [status: proposed] |
+| Aluno.Responsavel_Financeiro | map | guardians.full_name | name | collapse_ws | sim |  | 6.350 preenchidos, 5.828 nomes distintos, 5.352 usados por um aluno so. Nome nunca identifica cliente: vira o nome do guardiao, sem vinculo com customers (380 nomes coincidem com customers.full_name e 111 casam com 2+ clientes) |
 | Aluno.Telefone | ignore |  |  |  |  |  | 535 preenchidos em 6.652: copia esparsa do telefone do aluno, e TBL_ENDTEL e a fonte (23.015 telefones em 6.894 alunos) que carrega student_contacts |
 | Created | ignore |  |  |  |  |  | legacy_audit_only |
 | __PowerAppsId__ | ignore |  |  |  |  |  | empty_column |
 | Aluno.Login.ID | defer |  |  |  |  |  | user_link_requires_review |
 | Aluno.UltimoContato | ignore |  |  |  |  |  | 6.560 preenchidos, 688 datas distintas: data derivada do historico de contato |
-| Aluno.CPFResponsavel | map | guardians.document_number | document | digits |  |  | 6.651 preenchidos: 5.560 validos, 1.084 invalidos (DOCUMENT_INVALID) e 5.095 distintos. Entra como documento do guardiao, nunca como chave de vinculo: nenhum desses CPFs existe em customers (os 2.138 documentos de la sao CNPJ de TBL_CLIENTE) e guardians.customer_id nasce nulo [status: proposed] |
+| Aluno.CPFResponsavel | map | guardians.document_number | document | digits |  |  | 6.651 preenchidos: 5.560 validos, 1.084 invalidos (DOCUMENT_INVALID) e 5.095 distintos. Entra como documento do guardiao, nunca como chave de vinculo: nenhum desses CPFs existe em customers (os 2.138 documentos de la sao CNPJ de TBL_CLIENTE) e guardians.customer_id nasce nulo |
 | Aluno.Endereco | ignore |  |  |  |  |  | 442 preenchidos em 6.652 e 349 deles sao identicos a um ENDTEL_VALOR: copia esparsa do endereco, que TBL_ENDTEL carrega em student_contacts |
 | Aluno.Acordo | ignore |  |  |  |  |  | computed_cache |
 | Aluno_Processo | ignore |  |  |  |  |  | computed_cache |
@@ -154,9 +154,9 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Aluno_DocPai | ignore |  |  |  |  |  | 3.754 linhas, 1 valor distinto |
 | Aluno_Contrato | ignore |  |  |  |  |  | flag contrato assinado sem uso pratico (1 true em 3.755 linhas, 2.897 vazios) e sem coluna em students |
 | Aluno_DocSed | ignore |  |  |  |  |  | 3.652 linhas, 1 valor distinto |
-| Aluno_RGResponsavel | map | guardians.document_rg | text | trim |  |  | 621 preenchidos em 6.652 (texto livre) [status: proposed] |
-| Aluno_ResponsavelEstadoCivil | map | guardians.marital_status | text | trim |  |  | 585 preenchidos, texto livre e sujo: 177 Casada, 175 Solteira, 99 Casado, 45 Divorciada, 40 solteiro, 13 Divorciado, 8 Uniao Estavel, 3 Viuvo, 3 Separada/Viuva, 2 Casa/separado e 1 cada em valores que nao sao estado civil (um CPF, um nome de pessoa, GARCOM, Desempregada, Comerciante, Vendedora, `.`). Entra como veio, sem traducao, para a revisao assistida classificar [status: proposed] |
-| Aluno_ResponsavelProfissao | map | guardians.occupation | text | collapse_ws |  |  | 585 preenchidos em 6.652 (texto livre) [status: proposed] |
+| Aluno_RGResponsavel | map | guardians.document_rg | text | trim |  |  | 621 preenchidos em 6.652 (texto livre) |
+| Aluno_ResponsavelEstadoCivil | map | guardians.marital_status | text | trim |  |  | 585 preenchidos, texto livre e sujo: 177 Casada, 175 Solteira, 99 Casado, 45 Divorciada, 40 solteiro, 13 Divorciado, 8 Uniao Estavel, 3 Viuvo, 3 Separada/Viuva, 2 Casa/separado e 1 cada em valores que nao sao estado civil (um CPF, um nome de pessoa, GARCOM, Desempregada, Comerciante, Vendedora, `.`). Entra como veio, sem traducao, para a revisao assistida classificar |
+| Aluno_ResponsavelProfissao | map | guardians.occupation | text | collapse_ws |  |  | 585 preenchidos em 6.652 (texto livre) |
 
 ### TBL_AUXSEPARAR
 
@@ -702,17 +702,17 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 - Entidade canonica: student_contacts
 - Tipo de linha: entity
-- Observacoes: 47.562 telefones/e-mails/enderecos de aluno (6.894 alunos, 44.764 linhas com aluno resolvido por students.legacy_id). Entra em student_contacts (0010 + status na 0011) como `proposed`: 41.117 linhas tem tipo e valor e sao as carregaveis; 457 tem tipo com valor vazio e 5.988 estao vazias nas duas colunas, entao nao ha o que gravar nelas.
+- Observacoes: 47.562 telefones/e-mails/enderecos de aluno (6.894 alunos, 44.764 linhas com aluno resolvido por students.legacy_id). Entra em student_contacts (0010 + status na 0011), confirmado pelo operador em 2026-10-27: 41.117 linhas tem tipo e valor e sao as carregaveis; 457 tem tipo com valor vazio e 5.988 estao vazias nas duas colunas, entao nao ha o que gravar nelas.
 - Colunas: 9 (map=6, ignore=2, defer=1, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
-| ENDTEL_ALUNO_ID | map | student_contacts.student_id | reference | trim | sim | students | 44.764 das 47.562 linhas resolvem por students.legacy_id; as demais apontam para aluno fora da carga e a linha e descartada com LOAD_REFERENCE_UNRESOLVED [status: proposed] |
-| ENDTEL_TIPO | map | student_contacts.type | code | value_map_ci | sim |  | 23.015 TELEFONE, 9.927 ENDERECO, 8.632 EMAIL; as 5.988 sem tipo tambem nao tem valor nem status (nada a carregar), por isso nao ha rotulo sintetico. O rotulo e confiavel em 99,4% das 41.117 linhas com valor: 252 tem `@` e nao estao como EMAIL, 13 EMAIL nao tem `@`, 5 TELEFONE tem letra e 1 TELEFONE tem virgula [valores: telefone->phone, endereco->address, email->email] [status: proposed] |
-| ENDTEL_STATUS | map | student_contacts.status | code | value_map_ci |  |  | 35.578 ATIVADO, 5.996 DESATIVADO (toda linha com valor tem status); coluna criada pela 0011 [valores: ativado->active, desativado->inactive] [status: proposed] |
-| ENDTEL_VALOR | map | student_contacts.value | text | collapse_ws | sim |  | 34.042 valores distintos; 6.445 linhas da aba estao sem valor e por isso nao entram (413 delas chegam a este campo e as demais sao descartadas antes, por tipo vazio ou aluno nao resolvido) [status: proposed] |
-| ENDTEL_PRINCIPAL | map | student_contacts.is_primary | boolean | boolean_sim_nao |  |  | 6.971 SIM, 39.478 NAO, 1.113 vazios (DEFAULT false da 0010) [status: proposed] |
+| ENDTEL_ALUNO_ID | map | student_contacts.student_id | reference | trim | sim | students | 44.764 das 47.562 linhas resolvem por students.legacy_id; as demais apontam para aluno fora da carga e a linha e descartada com LOAD_REFERENCE_UNRESOLVED |
+| ENDTEL_TIPO | map | student_contacts.type | code | value_map_ci | sim |  | 23.015 TELEFONE, 9.927 ENDERECO, 8.632 EMAIL; as 5.988 sem tipo tambem nao tem valor nem status (nada a carregar), por isso nao ha rotulo sintetico. O rotulo e confiavel em 99,4% das 41.117 linhas com valor: 252 tem `@` e nao estao como EMAIL, 13 EMAIL nao tem `@`, 5 TELEFONE tem letra e 1 TELEFONE tem virgula [valores: telefone->phone, endereco->address, email->email] |
+| ENDTEL_STATUS | map | student_contacts.status | code | value_map_ci |  |  | 35.578 ATIVADO, 5.996 DESATIVADO (toda linha com valor tem status); coluna criada pela 0011 [valores: ativado->active, desativado->inactive] |
+| ENDTEL_VALOR | map | student_contacts.value | text | collapse_ws | sim |  | 34.042 valores distintos; 6.445 linhas da aba estao sem valor e por isso nao entram (413 delas chegam a este campo e as demais sao descartadas antes, por tipo vazio ou aluno nao resolvido) |
+| ENDTEL_PRINCIPAL | map | student_contacts.is_primary | boolean | boolean_sim_nao |  |  | 6.971 SIM, 39.478 NAO, 1.113 vazios (DEFAULT false da 0010) |
 | ENDTEL_OBSERVACAO | defer |  |  |  |  |  | no_canonical_destination [gap: students_contact] |
 | ENDTEL_ORIGEM | ignore |  |  |  |  |  | legacy_flag |
 | ID | map | student_contacts.legacy_id | legacy_id | trim | sim |  |  |
@@ -1161,7 +1161,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Attachments | ignore |  |  |  |  |  | attachment_metadata |
 | Pagamento.Aluno_ID | map | agreements.student_id | reference | trim |  | students | 1.568 preenchidos, 4 vazios; contem listas ('102;103') |
 | Pagamento.Tipo | defer |  |  |  |  |  | JUDICIAL, EXTRAJUDICIAL, CEJUSC, PERSONALIZADO [gap: agreements_type] |
-| Pagamento_Nome | map | agreements.reference | text | collapse_ws |  |  | rotulo do lote de acordo ('Acordo 2024': 557, 'Acordo 2023': 438, 'Acordo 2025': 186; 73 rotulos em 1.570 linhas). Agrupa lotes, nao identifica acordo - a identidade continua em agreements.legacy_id (TBL_PAGAMENTO.ID); nenhuma coluna escrevia em agreements.reference. Enquanto 'proposed', a carga exige --allow-proposed agreements [status: proposed] |
+| Pagamento_Nome | map | agreements.reference | text | collapse_ws |  |  | rotulo do lote de acordo ('Acordo 2024': 557, 'Acordo 2023': 438, 'Acordo 2025': 186; 73 rotulos em 1.570 linhas). Agrupa lotes, nao identifica acordo - a identidade continua em agreements.legacy_id (TBL_PAGAMENTO.ID); nenhuma outra coluna escrevia em agreements.reference. Confirmado pelo operador em 2026-10-27 depois da validacao em tela, entao a cadeia financeira deixou de exigir --allow-proposed agreements |
 | Pagamento_USUARIOCRIACAO | defer |  |  |  |  |  | user_link_requires_review |
 | Pagamento_StatusAcordo | ignore |  |  |  |  |  | empty_column |
 | Pagamento_DataFechamento | review |  |  |  |  |  | 1.497 de 1.572 preenchidos; agreements.closed_at existe desde a 0010 e a coluna segue em revisao porque nao esta definido se a data e o fechamento do acordo (parcelamento encerrado) ou a assinatura do contrato [gap: agreements_closed_at] |
@@ -1599,7 +1599,6 @@ Colunas: `TBL_USER.ID`.
 
 | Codigo | Motivo | Ocorrencias | Abas | Exemplos |
 |---|---|---:|---|---|
-| `MAPPING_NOT_CONFIRMED` | `proposed` | 11 | TBL_ALUNO, TBL_ENDTEL, TBL_PAGAMENTO | `TBL_ALUNO.Aluno.Responsavel_Financeiro`, `TBL_ALUNO.Aluno.CPFResponsavel`, `TBL_ALUNO.Aluno_RGResponsavel`, `TBL_ALUNO.Aluno_ResponsavelEstadoCivil` |
 | `REVIEW_REQUIRED` | `pending_policy` | 1 | TBL_PAGAMENTO | `TBL_PAGAMENTO.Pagamento_DataFechamento` |
 | `REVIEW_REQUIRED` | `user_import_requires_credential_reset` | 1 | TBL_USER | `TBL_USER.ID` |
 

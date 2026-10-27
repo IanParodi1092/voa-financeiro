@@ -1257,12 +1257,15 @@ class RealDictionaryTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.dictionary = load_dictionary(DEFAULT_DICTIONARY)
         cls.schema = parse_canonical_columns()
-        # `Pagamento_Nome -> agreements.reference` entrou como `proposed` em 2026-10-22, entao a
-        # cadeia financeira so fica pronta com a aprovacao explicita - que e a flag que a carga real
-        # recebe. O plano sem a flag fica guardado para cobrir o bloqueio.
-        cls.plan_data = build_plan(cls.dictionary, cls.schema, None, {"agreements"})
+        # O operador confirmou em 2026-10-27 as 11 propostas que sobravam (`Pagamento_Nome` e as
+        # 5+5 do guardiao e do contato do aluno), entao a carga nao precisa mais de
+        # `--allow-proposed`: o plano sem flag e o plano de producao. A versao com as flags fica
+        # guardada para provar que a flag continua aceita e nao muda nada quando nada resta.
+        cls.plan_data = build_plan(cls.dictionary, cls.schema, None, set())
         cls.tables = cls.plan_data["tables"]
-        cls.without_flag = build_plan(cls.dictionary, cls.schema, None, set())["tables"]
+        cls.with_flag = build_plan(
+            cls.dictionary, cls.schema, None, {"agreements", "guardians", "student_contacts"}
+        )["tables"]
 
     def test_source_name_matches_the_staged_workbook(self) -> None:
         self.assertEqual(self.dictionary["source_name"], "VOA.xlsx")
@@ -1287,48 +1290,34 @@ class RealDictionaryTests(unittest.TestCase):
         agreements = self.tables["agreements"]
         self.assertEqual(agreements.missing_required, [])
         self.assertEqual(agreements.status, "ready")
-        self.assertEqual(agreements.proposed_columns, ["reference"])
+        self.assertEqual(agreements.proposed_columns, [])
         self.assertEqual(agreements.links, {"customer_id": "customers"})
         self.assertEqual(sorted(agreements.aggregates), ["installments_count", "total_amount"])
 
-    def test_the_a_prime_mapping_waits_for_the_operator_flag(self) -> None:
-        """`Pagamento_Nome -> agreements.reference` is `proposed`: no flag, no financial chain."""
-        agreements = self.without_flag["agreements"]
-        self.assertEqual(agreements.status, "blocked")
-        self.assertEqual(agreements.blocked_reason, "mapping_not_confirmed")
-        self.assertEqual(agreements.proposed_columns, ["reference"])
-        for table in ("installments", "payments"):
-            self.assertEqual(self.without_flag[table].status, "blocked", table)
-            self.assertEqual(self.without_flag[table].blocked_reason, "dependency_not_loaded", table)
-        self.assertEqual(self.without_flag["customers"].status, "ready")
+    def test_the_a_prime_mapping_no_longer_needs_a_flag(self) -> None:
+        """`Pagamento_Nome -> agreements.reference` foi confirmado em 2026-10-27.
 
-    def test_class_c_and_d_tables_wait_for_their_own_flag(self) -> None:
-        """`guardians` (0011) e `student_contacts` (0010) entram como `proposed`.
+        A cadeia financeira inteira carrega sem `--allow-proposed`, e a flag continua aceita sem
+        mudar nada: nao ha mais coluna `proposed` no dicionario para liberar.
+        """
+        for table in ("agreements", "installments", "payments", "customers"):
+            self.assertEqual(self.tables[table].status, "ready", table)
+            self.assertEqual(self.tables[table].proposed_columns, [], table)
+        for table, target in self.tables.items():
+            self.assertEqual(self.with_flag[table].status, target.status, table)
+            self.assertEqual(self.with_flag[table].proposed_columns, [], table)
 
-        Sem a flag a carga continua exatamente como antes das duas tabelas existirem; com
-        `--allow-proposed guardians,student_contacts` cada uma fica pronta e o guardiao aponta
-        para o aluno da propria linha (`links: row:students`).
+    def test_guardians_and_student_contacts_are_ready_without_a_flag(self) -> None:
+        """`guardians` (0011) e `student_contacts` (0010) carregam na rodada padrao.
+
+        O operador confirmou as 10 colunas em 2026-10-27 e o guardiao aponta para o aluno da
+        propria linha (`links: row:students`), nunca para um `customers` casado por nome.
         """
         for table in ("guardians", "student_contacts"):
-            self.assertEqual(self.without_flag[table].status, "blocked", table)
-            self.assertEqual(
-                self.without_flag[table].blocked_reason, "mapping_not_confirmed", table
-            )
-        approved = build_plan(
-            self.dictionary,
-            self.schema,
-            None,
-            {"agreements", "guardians", "student_contacts"},
-        )["tables"]
-        self.assertEqual(approved["student_contacts"].status, "ready")
-        self.assertEqual(approved["student_contacts"].missing_required, [])
-        self.assertEqual(approved["guardians"].status, "ready")
-        self.assertEqual(approved["guardians"].missing_required, [])
-        self.assertEqual(approved["guardians"].links, {"student_id": "students"})
-        self.assertEqual(
-            approved["student_contacts"].proposed_columns,
-            ["is_primary", "status", "student_id", "type", "value"],
-        )
+            self.assertEqual(self.tables[table].status, "ready", table)
+            self.assertEqual(self.tables[table].missing_required, [], table)
+            self.assertEqual(self.tables[table].proposed_columns, [], table)
+        self.assertEqual(self.tables["guardians"].links, {"student_id": "students"})
 
     def test_the_synthesised_customer_keeps_one_row_per_agreement(self) -> None:
         rules = self.dictionary["sheets"]["TBL_PAGAMENTO"]["columns"]
