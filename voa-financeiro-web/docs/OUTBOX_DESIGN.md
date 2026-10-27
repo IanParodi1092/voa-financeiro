@@ -4,10 +4,13 @@ Este documento existe **antes** do codigo. Ele fixa o contrato do outbox (tabela
 idempotencia, ciclo de vida) para que o cliente Asaas seja escrito contra uma fila cujo
 comportamento ja esta definido - e nao o contrario.
 
-O que existe hoje: `asaas_customers`, `asaas_charges` e `asaas_events` (migration 0005) e um
-webhook que grava o evento cru e responde 202 (`apps/api/src/routes/ops.ts`). Nao ha quem leia
-`asaas_events`: nenhuma linha recebe `processed_at`. Nao ha chamada de saida ao Asaas. Nada deste
-documento esta implementado.
+O que existe hoje (2026-10-27): `asaas_customers`, `asaas_charges` e `asaas_events` (migration 0005), o
+webhook que grava o evento cru e responde 202 (`apps/api/src/routes/ops.ts`) e **a fila de saida
+inteira** - tabela `outbox_events` (0012), `enqueueOutbox`, claim, worker em processo, cliente Asaas e
+os dois endpoints de operacao (secoes 14 e 17).
+
+O que ainda nao existe: nenhum produtor enfileira (depende da decisao 1 da secao 15) e nao ha
+consumidor de `asaas_events` - nenhuma linha recebe `processed_at`.
 
 O nome `outbox_events` e o do `.azure/project-plan.md` (linha 69), e o worker no mesmo processo
 tambem (linha 33: "jobs de retry e sincronizacao devem poder rodar no mesmo processo inicialmente
@@ -206,6 +209,7 @@ Retry cego em 400 transforma erro de dado em ruido; nao tentar em 429 perde dinh
 | 429 | retry, respeitando `Retry-After` quando vier |
 | 5xx, timeout, `ECONNRESET` | retry com backoff |
 | erro de programacao (`TypeError`, JSON invalido no payload) | `dead` (o mesmo codigo falharia sempre) |
+| infraestrutura local (banco fora, `ECONNREFUSED`, classe `08` do Postgres) | retry, nao ambiguo |
 
 ```sql
 -- retry
@@ -215,14 +219,18 @@ UPDATE outbox_events
        last_error = $3, locked_at = NULL, locked_by = NULL, updated_at = now()
  WHERE id = $1
 -- teto
---   $2 = least(power(2, attempts) * 5, 900) * (0.8 + random() * 0.4)
+--   $2 = least(2 ^ (attempts - 1) * 5, 900) * (0.8 + random() * 0.4)
 -- quando attempts >= max_attempts: status = 'dead', audit 'outbox.dead'
 ```
 
 `5s, 10s, 20s, 40s, 80s, 160s, 320s, 640s` (teto de 15 min) e 8 tentativas cobrem ~21 min de
 provedor fora do ar. O jitter de +-20% existe para o caso de o lote inteiro falhar junto (Asaas
 retornando 503): sem ele, todas as linhas voltam ao mesmo tempo e batem no provedor em sincronia.
-O calculo e feito em SQL com `now()`, entao `available_at` nao depende do relogio do processo.
+
+O `now()` e do banco, entao `available_at` nao depende do relogio do processo. So a **duracao** vem
+do processo, de `retryDelaySeconds` (`apps/api/src/domain/outbox.ts`), que e onde o jitter tem teste
+unitario - calcular no SQL deixaria a formula sem cobertura. `Retry-After` do provedor, quando vem,
+vence o backoff calculado.
 
 ## 8. Idempotencia e conciliacao
 
@@ -288,20 +296,33 @@ parar o worker, esperar o ciclo atual terminar, `app.close()`, `pool.end()`.
 
 ```ts
 export interface OutboxWorker {
+  /** Falso quando o laco nao roda (desligado por config ou sem chave do Asaas). */
+  enabled: boolean;
   /** Acorda o laco agora (chamado depois do COMMIT de quem enfileirou). */
   wake(): void;
   /** Para o laco e espera o ciclo em andamento, no maximo `timeoutMs`. */
   stop(options?: { timeoutMs?: number }): Promise<void>;
 }
 
-export function startOutboxWorker(deps: {
+export function startOutboxWorker(options: {
   pool: Pool;
   logger: FastifyBaseLogger;
-  config: AppConfig;
-  asaas: AsaasClient;
+  /** Subconjunto do `AppConfig` que o laco usa; `server.ts` faz o mapeamento. */
+  settings: {
+    environment: OutboxEnvironment;
+    pollIntervalMs: number;
+    batchSize: number;
+    leaseTimeoutMs: number;
+  };
+  enabled: boolean; // OUTBOX_WORKER_ENABLED
+  asaas?: AsaasClient; // sem cliente o laco nao roda: a fila enche e nada sai
   workerId?: string; // hostname:pid, gravado em locked_by
 }): OutboxWorker;
 ```
+
+O laco recebe `settings`, e nao o `AppConfig` inteiro, de proposito: o teste monta um laco com
+`pollIntervalMs: 10` sem inventar um ambiente completo, e o tipo mostra exatamente quais numeros o
+worker usa (o `OUTBOX_MAX_ATTEMPTS` fica com o **produtor**, que o copia para a linha).
 
 O laco usa `setTimeout` recursivo, nao `setInterval`: com `setInterval`, um ciclo lento (Asaas com
 latencia alta) empilha ciclos concorrentes e o paralelismo efetivo deixa de ser 1. Cada ciclo:
@@ -360,51 +381,61 @@ worker registra `asaas client not configured` e nao pega nada. Webhook e worker 
 
 ## 13. Plano de testes
 
-**Unitarios** (`vitest`, sem banco), no padrao de `domain/*.test.ts`:
+**Unitarios** (`vitest`, sem banco), em `apps/api/src/domain/outbox.test.ts`:
 
-- `backoff.test.ts`: progressao 5s..640s com teto, jitter dentro de +-20%, `attempts >= max`
-  decide `dead`;
-- `classify.test.ts`: a tabela da secao 7, incluindo `429` com e sem `Retry-After`;
-- `payload.test.ts`: `dedupeKey` estavel por entidade e payload sem campo volatil (nada de
-  `Date.now()` dentro do snapshot).
+- progressao `5s..640s` com teto de 900s, jitter dentro de +-20% e `attempts` invalido recusado;
+- a tabela da secao 7 inteira: `400/401/403/404/409/422` -> `dead`, `429` com e sem `Retry-After`,
+  `408/425/500/502/503` -> retry, `504` e timeout sem `status` -> retry **ambiguo**, `ECONNREFUSED` e
+  classe `08` -> retry nao ambiguo, `23505` -> `dead`;
+- `dedupeKey` estavel por entidade e `topic` fora da lista fechada recusado.
 
-**Integracao** (`src/outbox.integration.test.ts`), reaproveitando o harness de
+**Integracao** (`apps/api/src/outbox/outbox.integration.test.ts`), reaproveitando o harness de
 `app.integration.test.ts` (schema temporario, `TEST_DATABASE_URL`, `applyMigrations`):
 
 1. enfileirar dentro de transacao que sofre `ROLLBACK` -> nenhuma linha (prova o enfileiramento
    transacional, que e a razao de o outbox existir);
-2. mesma `dedupeKey` duas vezes -> 1 linha, `rowCount` da segunda chamada = 0;
-3. fake client que falha com 500 uma vez e depois responde 201 -> `attempts = 2`, `done`,
-   `completed_at` preenchido;
-4. fake client que responde 400 -> `dead` na primeira tentativa, sem backoff;
-5. lease vencido: linha `processing` com `locked_at` recuado no SQL -> reaper devolve para
-   `pending` e o ciclo seguinte processa;
-6. dois lacos com o mesmo pool e batch 5 sobre 5 linhas -> cada `dedupeKey` processada exatamente
-   uma vez (prova do `SKIP LOCKED`; o fake conta chamadas por chave);
-7. `asaas_events` duplicado (mesmo `external_event_id`) -> 1 linha processada e 1 lancamento em
-   `retention_ledger`;
-8. `POST /api/v1/ops/outbox/:id/retry` em linha `dead` -> 200 e `pending`; em linha `pending`
-   -> 409.
+2. mesma `dedupeKey` duas vezes -> 1 linha, e a segunda chamada devolve `false`;
+3. fake que responde `503` uma vez e depois 201 -> `attempts = 2`, `done`, `completed_at` preenchido,
+   e a tentativa 2 consulta o provedor antes de reenviar;
+4. fake que responde `400` -> `dead` na primeira tentativa, com um unico POST;
+5. timeout com a cobranca ja existente no provedor -> adota o `externalId`, grava
+   `last_error = 'recovered by reconciliation'` e **nao** faz segundo POST;
+6. lease vencido: reaper devolve para `pending` com `last_error = 'lease expired'` e `attempts`
+   preservado, e o ciclo seguinte conclui;
+7. dois ciclos concorrentes com batch 5 sobre 5 linhas -> cada `dedupeKey` processada uma vez
+   (prova do `SKIP LOCKED`);
+8. `GET /api/v1/ops/outbox` (resumo, 401 sem token) e `POST .../:id/retry`: `dead` -> 200 e `pending`
+   com `attempts = 0`, `pending` -> 409, uuid inexistente -> 404, id invalido -> 400 antes de tocar o
+   banco, `viewer` -> 403, e `audit_logs` guardando o `previousError`.
 
-O `AsaasClient` e uma interface injetada; **nenhum teste toca a rede**. O fake mora em
-`src/outbox/asaas-fake.ts` e so e importado por teste (mesmo criterio de `hashPassword` nos testes
-de identidade).
+O `AsaasClient` e uma interface injetada; **nenhum teste toca a rede**. O fake (`FakeAsaasClient`) mora
+no proprio arquivo de teste e agenda falha por `externalReference` - assim um cenario nao consome a
+falha do outro.
 
 ## 14. Sequencia de implementacao
 
-Cada passo e um commit verde (typecheck + `npm test` + `npm run test:integration`):
+Cada passo e um commit verde (typecheck + `npm test` + `npm run test:integration`). Os passos 1-6
+estao feitos; o 7 e o 8 continuam pendentes por decisao de negocio (secao 15).
 
-1. `apps/api/migrations/0012_outbox_events.sql` - DDL da secao 3. Nada le a tabela ainda.
-2. `apps/api/src/outbox/backoff.ts` + `classify.ts` + testes unitarios.
-3. `apps/api/src/outbox/publish.ts` (`enqueueOutbox`) + `worker.ts` (`startOutboxWorker`), com
-   `AsaasClient` ainda ausente: o handler so marca `dead` com `last_error = 'no client'`.
-4. `apps/api/src/outbox/asaas-client.ts` (interface + implementacao com `fetch`, timeout por
-   `AbortSignal.timeout`, `externalReference`) e `asaas-fake.ts`.
-5. `config.ts` + `.env.example` + `server.ts` (start/stop na ordem da secao 10).
-6. `routes/ops.ts`: `GET /api/v1/ops/outbox`, `POST /api/v1/ops/outbox/:id/retry` + testes de
-   integracao; `docs/API_ROUTES.md` ganha as duas rotas.
-7. Produtor: `POST /api/v1/installments` passa a abrir transacao e enfileirar.
-8. `apps/api/src/outbox/events.ts`: consumidor de `asaas_events` (secao 9).
+1. **feito** - `apps/api/migrations/0012_outbox_events.sql`: DDL da secao 3. Nada le a tabela ainda.
+2. **feito** - `apps/api/src/domain/outbox.ts` + `domain/outbox.test.ts` (backoff, classificacao,
+   `dedupeKey`). As regras puras ficaram num modulo so, e nao em `outbox/backoff.ts` +
+   `outbox/classify.ts`, para seguir a camada que o repositorio ja usa: `domain/` e puro e testado
+   sem banco, `db/` e SQL.
+3. **feito** - `apps/api/src/db/outbox.ts` (`enqueueOutbox`, claim, finish, reaper, resumo, retry) e
+   `apps/api/src/outbox/worker.ts` (`runOutboxCycle`, `startOutboxWorker`). O desenho previa um
+   worker sem cliente neste passo; na pratica ele nasceu junto com o cliente (passo 4), porque um
+   handler que so marca `dead` nao exercita nada.
+4. **feito** - `apps/api/src/integrations/asaas-client.ts`: interface + implementacao com `fetch`,
+   `AbortSignal.timeout`, `externalReference` e `access_token` no header. `apps/api/src/outbox/handlers.ts`
+   traduz cada topic em chamada ao provedor + escrita local (`asaas_customers`, `asaas_charges`) com
+   `ON CONFLICT` que reaplica o mesmo estado.
+5. **feito** - `apps/api/src/config.ts` (`ASAAS_API_URL`, `ASAAS_API_KEY`, `OUTBOX_*`), `.env.example`
+   e `server.ts` (start/stop na ordem da secao 10).
+6. **feito** - `routes/ops.ts`: `GET /api/v1/ops/outbox`, `POST /api/v1/ops/outbox/:id/retry`, com
+   `apps/api/src/outbox/outbox.integration.test.ts`; `docs/API_ROUTES.md` ganhou as duas rotas.
+7. Produtor: `POST /api/v1/installments` passa a abrir transacao e enfileirar (secao 15, item 1).
+8. `apps/api/src/outbox/events.ts`: consumidor de `asaas_events` (secao 9, secao 15, item 4).
 
 Os passos 1-6 nao dependem de chave do Asaas; o 7 depende de decisao de negocio (secao 15, item 1).
 
@@ -415,8 +446,9 @@ Os passos 1-6 nao dependem de chave do Asaas; o 7 depende de decisao de negocio 
    e mais segura para operacao financeira e nao cobra retroativo por acidente; a primeira e menos
    clique. Nenhuma das duas cobra as 15.535 parcelas do legado sem uma acao deliberada.
 2. **4xx vira `dead` imediato** (tabela da secao 7). Existe caso de 400 transitorio nesse provedor?
-3. **Granularidade do `CHECK` de `topic`**: manter lista fechada (migration por topic novo) ou
-   trocar por `text` validado no consumidor?
+3. **Granularidade do `CHECK` de `topic`** - **resolvido**: lista fechada mantida. Um topic novo
+   custa uma migration (expand), o que forca revisao em vez de aceitar string arbitraria na fila que
+   move dinheiro.
 4. **`retention_ledger`**: indice unico parcial em `(payment_id, entry_type)` ou checagem
    `WHERE NOT EXISTS` no handler? O indice e mais forte, mas exige migration e pode conflitar com
    mais de um lancamento legitimo para o mesmo pagamento.
@@ -425,6 +457,7 @@ Os passos 1-6 nao dependem de chave do Asaas; o 7 depende de decisao de negocio 
 6. **Retencao da fila**: por quanto tempo guardar linhas `done`? Sem regra, `outbox_events` cresce
    com o volume de parcelas para sempre. Proposta: `DELETE` de `done` com `completed_at` mais
    antigo que 90 dias, num passo do proprio laco (particao mensal so se o volume justificar).
+   **Aberto**: nenhum expurgo existe no codigo hoje.
 
 ## 16. Riscos e limites conhecidos
 
@@ -444,3 +477,34 @@ Os passos 1-6 nao dependem de chave do Asaas; o 7 depende de decisao de negocio 
   `asaas_charges` tem `external_id UNIQUE` global. Um mesmo id nos dois ambientes e improvavel
   (ids do Asaas sao distintos); se acontecer, o `INSERT` falha e a mensagem morre em `dead` -
   comportamento correto (nunca sobrescrever), ainda que barulhento.
+
+## 17. Estado da implementacao
+
+Mapa do que existe (2026-10-27), para o proximo passo nao procurar arquivo por arquivo:
+
+| Camada | Arquivo | Papel |
+|---|---|---|
+| schema | `apps/api/migrations/0012_outbox_events.sql` | `outbox_events` + 4 indices |
+| regras | `apps/api/src/domain/outbox.ts` | `dedupeKey`, backoff, `classifyFailure`, `ProviderError` |
+| SQL | `apps/api/src/db/outbox.ts` | enqueue, claim, done/retry/dead, reaper, resumo, retry |
+| provedor | `apps/api/src/integrations/asaas-client.ts` | `AsaasClient` + implementacao `fetch` |
+| handlers | `apps/api/src/outbox/handlers.ts` | topic -> chamada + `asaas_customers`/`asaas_charges` |
+| laco | `apps/api/src/outbox/worker.ts` | `runOutboxCycle`, `startOutboxWorker` |
+| processo | `apps/api/src/server.ts` | start no boot, stop antes de `app.close()` |
+| operacao | `apps/api/src/routes/ops.ts` | `GET /ops/outbox`, `POST /ops/outbox/:id/retry` |
+
+Testes: 26 unitarios em `domain/outbox.test.ts` e 8 de integracao em
+`outbox/outbox.integration.test.ts` (schema descartavel, fake no lugar do provedor).
+
+O que falta, na ordem em que importa:
+
+1. decidir o primeiro produtor (secao 15, item 1) e ligar `enqueueOutbox` em
+   `POST /api/v1/installments`;
+2. consumidor de `asaas_events` (secao 9): sem ele o webhook grava e ninguem aplica status;
+3. verificar a documentacao de idempotencia do Asaas para POST de cobranca (secao 15, item 5);
+4. expurgo das linhas `done` (secao 15, item 6).
+
+Nota de infraestrutura: `applyMigrations` (`apps/api/src/db/run-migrations.ts`) passou a segurar um
+`pg_advisory_lock` durante a execucao. Duas execucoes concorrentes - duas instancias subindo juntas,
+ou os dois arquivos de teste de integracao em paralelo - colidiam em `CREATE EXTENSION IF NOT EXISTS
+pgcrypto`: a extensao e do **banco**, nao do schema, e o `IF NOT EXISTS` nao e atomico entre sessoes.

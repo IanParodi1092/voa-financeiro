@@ -2,7 +2,7 @@
 
 Todas as rotas de dominio sao versionadas sob `/api/v1`. Observabilidade, identidade, RBAC e o schema de dominio ja estao implementados; os adaptadores externos (Asaas, ChatGuru, SMTP) continuam desligados ate existir configuracao homologada.
 
-O codigo da API separa as rotas por contexto, um arquivo por grupo: `routes/ops.ts` (saude e webhook), `routes/catalog.ts`, `routes/finance.ts`, `routes/migration.ts`, `routes/reconciliation.ts` e `routes/identity.ts` (sessao e auditoria). `app.ts` so compoe: registra os plugins de plataforma, monta o `RouteDeps` (pool + config + executor de `PATCH`) e chama um `register<Contexto>Routes` por modulo. O processo continua sendo um so - os modulos compartilham o mesmo pool e as mesmas transacoes, que e o que mantem a cadeia financeira consistente. As guardas de RBAC ficam em `http/guards.ts` e o contrato dos `PATCH`, em `http/patch-runner.ts`.
+O codigo da API separa as rotas por contexto, um arquivo por grupo: `routes/ops.ts` (saude, webhook e operacao da fila), `routes/catalog.ts`, `routes/finance.ts`, `routes/migration.ts`, `routes/reconciliation.ts` e `routes/identity.ts` (sessao e auditoria). `app.ts` so compoe: registra os plugins de plataforma, monta o `RouteDeps` (pool + config + executor de `PATCH`) e chama um `register<Contexto>Routes` por modulo. O processo continua sendo um so - os modulos compartilham o mesmo pool e as mesmas transacoes, que e o que mantem a cadeia financeira consistente. As guardas de RBAC ficam em `http/guards.ts` e o contrato dos `PATCH`, em `http/patch-runner.ts`.
 
 ## Implementadas
 
@@ -26,6 +26,8 @@ O codigo da API separa as rotas por contexto, um arquivo por grupo: `routes/ops.
 - `GET /api/v1/reconciliation/post-load[/:check]` - conciliacao pos-corte somente leitura (ver a secao propria)
 - `GET /api/v1/audit-logs` (somente `admin`)
 - `POST /api/v1/webhooks/asaas` (exige o token `ASAAS_WEBHOOK_TOKEN`)
+- `GET /api/v1/ops/outbox` (`read`) e `POST /api/v1/ops/outbox/:id/retry` (`audit`) - operacao da fila
+  de saida do Asaas (ver a secao propria)
 
 ## Contrato dos `PATCH`
 
@@ -197,6 +199,29 @@ Vincular **nao** marca `isVerified` sozinho: o corpo do PATCH envia os dois camp
 confirma o par (`{ "customerId": "...", "isVerified": true }`), e `customerId: null` desfaz. Um
 vinculo gravado por fora da API aparece na quinta verificacao do relatorio pos-corte.
 
+## Fila de saida (outbox)
+
+As chamadas de **saida** ao Asaas nao viram rota REST: entram numa fila dentro do banco
+(`outbox_events`, migration `0012`) e saem por um worker no mesmo processo. O desenho completo esta em
+`docs/OUTBOX_DESIGN.md`; o que a operacao precisa saber:
+
+- `GET /api/v1/ops/outbox` (`read`) - `counts` por status, `oldestPendingAgeSeconds`,
+  `oldestProcessingAgeSeconds` e as 10 linhas `dead` mais recentes. Pendente velho e o sinal de alarme:
+  significa worker parado ou provedor recusando tudo;
+- `POST /api/v1/ops/outbox/:id/retry` (`audit`, hoje so `admin`) - reabre **somente** linha `dead`
+  (`attempts = 0`, `available_at = now()`) e audita `outbox.retried` com o `previousError`.
+
+| Situacao | Status | `code` |
+|---|---|---|
+| id fora do formato uuid | 400 | `INVALID_REQUEST` |
+| linha inexistente | 404 | `NOT_FOUND` |
+| linha em `pending` ou `processing` | 409 | `OUTBOX_NOT_DEAD` |
+| banco indisponivel | 503 | `DATABASE_UNAVAILABLE` |
+
+`POST /api/v1/installments` ainda **nao** enfileira cobranca: o primeiro produtor depende de decisao de
+negocio (`docs/OUTBOX_DESIGN.md`, secao 15, item 1). Sem `ASAAS_API_KEY` a API sobe, o worker fica idle e
+as linhas ficam `pending`.
+
 ## Permissoes (RBAC)
 
 As permissoes ficam em `apps/api/src/auth/roles.ts` e sao conferidas antes de tocar no banco:
@@ -216,7 +241,6 @@ Um usuario sem papel recebe 403 (`FORBIDDEN`). Cada escrita aceita registra o ev
 ## Contratos pendentes
 
 - `POST /api/v1/schools/:id/retention/recalculate`;
-- `POST /api/v1/billing/asaas/customers`, `POST /api/v1/billing/asaas/charges`,
-  `GET /api/v1/billing/asaas/charges/:id`;
+- `GET /api/v1/billing/asaas/charges/:id` (a **saida** para o Asaas nao vira rota: e o outbox);
 - `POST /api/v1/communications/email`, `POST /api/v1/communications/chatguru`,
   `POST /api/v1/webhooks/chatguru`.

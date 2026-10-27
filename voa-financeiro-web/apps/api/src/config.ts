@@ -29,7 +29,14 @@ const environmentSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   MIGRATION_SOURCE_DIR: z.string().default('../../_import'),
   MIGRATION_BATCH_SIZE: z.coerce.number().int().positive().default(500),
-  WEBHOOK_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(5)
+  WEBHOOK_RETRY_LIMIT: z.coerce.number().int().nonnegative().default(5),
+  ASAAS_API_URL: z.string().url().default('https://api-sandbox.asaas.com/v3'),
+  ASAAS_API_KEY: z.preprocess((value) => value === '' ? undefined : value, z.string().min(1).optional()),
+  OUTBOX_WORKER_ENABLED: booleanish(true),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(5),
+  OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
+  OUTBOX_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000)
 });
 
 export interface RefreshCookieConfig {

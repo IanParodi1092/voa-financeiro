@@ -1,12 +1,20 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { recordAudit } from '../audit.js';
+import { outboxSummary, retryDeadMessage } from '../db/outbox.js';
 import type { RouteDeps } from '../http/deps.js';
+import { actorIdOf, requireAuthentication, requirePermission } from '../http/guards.js';
 
 /**
- * Rotas de infraestrutura: saude do processo e o receptor de webhook do Asaas.
+ * Rotas de infraestrutura: saude do processo, o receptor de webhook do Asaas e a operacao da fila
+ * de saida.
  *
- * Nao tocam regra de negocio. O webhook so grava o evento cru em `asaas_events` e responde 202: o
- * processamento (criar cobranca, sincronizar status) e outro passo, que ainda nao existe.
+ * Nao tocam regra de negocio. O webhook so grava o evento cru em `asaas_events` e responde 202; os
+ * dois endpoints de `outbox` leem o estado da fila e reabrem uma linha morta, nada mais.
  */
+
+const outboxIdSchema = z.string().uuid();
+
 export function registerOpsRoutes(app: FastifyInstance, deps: RouteDeps): void {
   const { pool, config } = deps;
 
@@ -38,5 +46,54 @@ export function registerOpsRoutes(app: FastifyInstance, deps: RouteDeps): void {
       ON CONFLICT (external_event_id) DO NOTHING
       RETURNING id`, [eventId, config.ASAAS_ENVIRONMENT, eventType, externalChargeId, payload]);
     return reply.code(202).send({ accepted: true, duplicate: result.rowCount === 0 });
+  });
+
+  /**
+   * Estado da fila. `counts` sozinho nao diferencia "acabou de chegar" de "esta preso ha 20 minutos",
+   * e por isso o resumo traz `oldestPendingAgeSeconds` - fila com pendente velho significa worker
+   * parado ou provedor recusando tudo.
+   */
+  app.get('/api/v1/ops/outbox', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    return outboxSummary(pool, { deadLimit: 10 });
+  });
+
+  /**
+   * Reabre uma linha `dead`: `attempts = 0`, `available_at = now()`. So `dead` entra - em `pending` e
+   * `processing` o 409 evita criar uma segunda entrega concorrente para a mesma mensagem.
+   *
+   * Nao acorda o worker: o poll seguinte (2s por default) ja a pega, e o endpoint continua sem
+   * depender do laco estar na mesma instancia.
+   */
+  app.post('/api/v1/ops/outbox/:id/retry', { preHandler: requirePermission('audit') }, async (request, reply) => {
+    const parsedId = outboxIdSchema.safeParse((request.params as { id?: string }).id);
+    if (!parsedId.success) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid outbox id', correlationId: request.id });
+    }
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const outcome = await retryDeadMessage(pool, parsedId.data);
+    if (outcome.status === 'not_found') {
+      return reply.code(404).send({ code: 'NOT_FOUND', message: 'Outbox event not found', correlationId: request.id });
+    }
+    if (outcome.status === 'not_dead') {
+      return reply.code(409).send({
+        code: 'OUTBOX_NOT_DEAD',
+        message: `Outbox event is ${outcome.currentStatus}`,
+        correlationId: request.id
+      });
+    }
+    await recordAudit(pool, request.log, request.id, {
+      action: 'outbox.retried',
+      actorId: actorIdOf(request),
+      entityType: 'outbox_events',
+      entityId: parsedId.data,
+      metadata: {
+        dedupeKey: outcome.dedupeKey,
+        previousError: outcome.previousError,
+        ownerEntityType: outcome.entityType,
+        ownerEntityId: outcome.entityId
+      }
+    });
+    return { id: parsedId.data, status: 'pending', attempts: 0, dedupeKey: outcome.dedupeKey };
   });
 }
