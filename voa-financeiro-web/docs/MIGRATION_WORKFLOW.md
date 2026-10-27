@@ -183,7 +183,7 @@ Antes de aprovar o lote e rodar a carga com UUIDs novos:
 1. `python scripts/build_field_dictionary.py --from-staging` sai com codigo `0` (nenhuma coluna sem decisao, nenhum destino inexistente e nenhuma divergencia de coluna entre workbook e staging).
 2. `python scripts/build_field_dictionary.py --gate approved` sai com codigo `0`: nao existe coluna `review` nem mapeamento `status: "proposed"`. Hoje ele sai com codigo `2` e 2 pendencias (`REVIEW_REQUIRED` em `Pagamento_DataFechamento` e `TBL_USER.ID`); nenhum `MAPPING_NOT_CONFIRMED` desde 2026-10-27.
 3. `migration_batches.status` do lote e alterado para aprovado somente depois do item 2.
-4. O banco canonico nao contem linhas de teste. Em 2026-09-24 existiam `schools` = 1 (legal_name `Escola Teste`) e `customers` = 1 (full_name `Ian`), ambas sem `legacy_source`/`legacy_table`/`legacy_id` e anteriores ao lote de staging; elas continuam no banco (identificaveis por `legacy_source IS NULL`) e devem ser removidas ou isoladas para nao poluir a reconciliacao:
+4. O banco canonico nao contem linhas de teste. Em 2026-09-24 existiam `schools` = 1 (legal_name `Escola Teste`) e `customers` = 1 (full_name `Ian`), ambas sem `legacy_source`/`legacy_table`/`legacy_id` e anteriores ao lote de staging; elas nao existem mais no banco local (medicao de 2026-10-27: `0` linhas sem `legacy_source` em `schools`, `customers`, `agreements` e `users`), e no Supabase as 3 linhas sem proveniencia devem ser removidas ou isoladas para nao poluir a reconciliacao:
 5. Senhas, tokens e API keys nao sao migrados; `TBL_BANCO.BANCO_APIKEY`, `TBL_USER.USER_SENHA` e `TBL_USER.USER_PASS` estao marcados como `secret_revoked` no dicionario.
 
 ## Resultado da carga canonica de 2026-09-25 (fase 7, parcial)
@@ -691,7 +691,7 @@ linhas e os 24 contatos) antes do cutover - a decisao e do operador.
 - `guardians` e `student_contacts`: carregados em 2026-10-27 (`6.347` e `38.962` linhas) e confirmados no dicionario no mesmo dia - a rodada padrao ja os inclui e o portao nao os lista mais;
 - `users`: entrada exige politica de credencial (`TBL_USER` nao tem coluna mapeada);
 - `students.customer_id`: `TBL_ALUNO` nao tem vinculo com o cliente; os 6.641 alunos ficam sem `customer_id` ate essa decisao;
-- as 2 linhas de teste sem `legacy_source` (`schools` = 1, `customers` = 1) continuam no banco e poluem a reconciliacao (`schools` 76 no canonico para 75 linhas legadas).
+- as 2 linhas de teste sem `legacy_source` (`schools` = 1, `customers` = 1) ja nao existem no banco local: medicao de 2026-10-27 deu `0` linhas sem proveniencia em `schools`, `customers`, `agreements` e `users` (`schools` 75, `customers` 26.264). Elas seguem no Supabase, onde sao 3 linhas (ver a ultima entrada desta lista).
 - canonico do Supabase: segue em somente-leitura por cota de disco e, quando for liberado, precisa receber a revisao (hoje tem 3 linhas sem `legacy_source` e a divergencia de R$ 1.362,48 entre `agreements.total_amount` e `installments.original_amount`, alem de estar 24 contatos atras do ensaio local).
 
 ## Entrada de uma aba/arquivo financeiro novo (boletos, payables, cobranca)
