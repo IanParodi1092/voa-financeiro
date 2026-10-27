@@ -101,4 +101,64 @@ describe('especificacoes de PATCH', () => {
     const trimmed = patchSpecs.schools.schema.safeParse({ legalName: '  Colegio X  ' });
     expect(trimmed.success && trimmed.data.legalName).toBe('Colegio X');
   });
+
+  it('expoe a promocao assistida do guardiao a cliente', () => {
+    const customerId = '9d1a6f30-7c4b-4e2a-8f55-1c9b0d7e6a24';
+    const accepted = patchSpecs.guardians.schema.safeParse({
+      customerId,
+      fullName: '  Maria da Silva  ',
+      maritalStatus: 'Casada',
+      isFinancial: false,
+      isVerified: true
+    });
+    expect(accepted.success && accepted.data).toEqual({
+      customerId,
+      fullName: 'Maria da Silva',
+      maritalStatus: 'Casada',
+      isFinancial: false,
+      isVerified: true
+    });
+
+    // `null` desfaz a promocao: o guardiao volta a ficar so na origem.
+    const unlinked = patchSpecs.guardians.schema.safeParse({ customerId: null });
+    expect(unlinked.success && unlinked.data).toEqual({ customerId: null });
+
+    const invalid = [
+      { customerId: 'nao-e-uuid' },
+      { fullName: 'A' },
+      { isFinancial: 'sim' },
+      { occupation: '' },
+      { maritalStatus: 'x'.repeat(41) }
+    ];
+    for (const body of invalid) {
+      expect({ body, accepted: patchSpecs.guardians.schema.safeParse(body).success }).toEqual({ body, accepted: false });
+    }
+  });
+
+  it('valida os rotulos do contato do aluno carregados do legado', () => {
+    const accepted = patchSpecs.studentContacts.schema.safeParse({ type: 'address', status: 'inactive', isPrimary: true });
+    expect(accepted.success).toBe(true);
+
+    const invalid = [
+      { type: 'telefone' },
+      { status: 'desativado' },
+      { value: '   ' },
+      { value: 'x'.repeat(201) },
+      { isVerified: 'sim' }
+    ];
+    for (const body of invalid) {
+      expect({ body, accepted: patchSpecs.studentContacts.schema.safeParse(body).success }).toEqual({ body, accepted: false });
+    }
+  });
+
+  it('aceita a data de fechamento do acordo apenas em ISO e permite reabrir', () => {
+    const closed = patchSpecs.agreements.schema.safeParse({ closedAt: '2026-10-27T00:00:00Z' });
+    expect(closed.success).toBe(true);
+    const reopened = patchSpecs.agreements.schema.safeParse({ closedAt: null });
+    expect(reopened.success && reopened.data).toEqual({ closedAt: null });
+
+    for (const body of [{ closedAt: '2026-10-27' }, { closedAt: 'ontem' }, { closedAt: 1750000000 }]) {
+      expect({ body, accepted: patchSpecs.agreements.schema.safeParse(body).success }).toEqual({ body, accepted: false });
+    }
+  });
 });

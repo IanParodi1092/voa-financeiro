@@ -469,6 +469,91 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
       expect(items[0]).toMatchObject({ id: paymentId, retentionStatus: null, retentionPercentage: null });
       expect(items[0]).toHaveProperty('retentionScheduledMonth');
     });
+
+    it('promove o guardiao a cliente e alterna o contato do aluno', async () => {
+      const headers = await adminHeaders();
+      const finance = await financeHeaders();
+      const viewer = await viewerHeaders();
+      const { schoolId, customerId, agreementId } = await seedPayment(finance);
+
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/students',
+        headers,
+        payload: { schoolId, customerId, fullName: `Aluno Guardiao ${randomUUID().slice(0, 6)}` }
+      });
+      expect(created.statusCode).toBe(201);
+      const studentId = (created.json() as { id: string }).id;
+
+      // `guardians` e `student_contacts` nascem da migracao, nao de `POST`: o cenario insere direto.
+      const guardianId = randomUUID();
+      const contactId = randomUUID();
+      await pool.query(
+        'INSERT INTO guardians (id, student_id, full_name, marital_status) VALUES ($1, $2, $3, $4)',
+        [guardianId, studentId, 'Responsavel Teste', 'Casada']
+      );
+      await pool.query(
+        "INSERT INTO student_contacts (id, student_id, type, value, status) VALUES ($1, $2, 'phone', '+55 11 90000-0001', 'active')",
+        [contactId, studentId]
+      );
+
+      const listed = await app.inject({ method: 'GET', url: `/api/v1/students/${studentId}/guardians`, headers });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json()).toMatchObject({ items: [{ id: guardianId, customerId: null, isFinancial: true }] });
+
+      const promoted = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/guardians/${guardianId}`,
+        headers,
+        payload: { customerId, isVerified: true, maritalStatus: 'Casada' }
+      });
+      expect(promoted.statusCode).toBe(200);
+      expect(promoted.json()).toMatchObject({ id: guardianId, customerId, isVerified: true, fullName: 'Responsavel Teste' });
+
+      const unlinked = await app.inject({
+        method: 'PATCH', url: `/api/v1/guardians/${guardianId}`, headers, payload: { customerId: null }
+      });
+      expect(unlinked.statusCode).toBe(200);
+      expect(unlinked.json()).toMatchObject({ customerId: null });
+
+      const contacts = await app.inject({ method: 'GET', url: `/api/v1/students/${studentId}/contacts`, headers });
+      expect(contacts.statusCode).toBe(200);
+      expect(contacts.json()).toMatchObject({ items: [{ id: contactId, type: 'phone', status: 'active' }] });
+
+      const deactivated = await app.inject({
+        method: 'PATCH', url: `/api/v1/student-contacts/${contactId}`, headers, payload: { status: 'inactive' }
+      });
+      expect(deactivated.statusCode).toBe(200);
+      expect(deactivated.json()).toMatchObject({ id: contactId, status: 'inactive' });
+
+      // `viewer` le mas nao escreve no catalogo.
+      const viewerRead = await app.inject({ method: 'GET', url: `/api/v1/students/${studentId}/contacts`, headers: viewer });
+      expect(viewerRead.statusCode).toBe(200);
+      const forbidden = await app.inject({
+        method: 'PATCH', url: `/api/v1/guardians/${guardianId}`, headers: viewer, payload: { isVerified: false }
+      });
+      expect(forbidden.statusCode).toBe(403);
+
+      // `closedAt` fecha e reabre o acordo (coluna escrita so pela aplicacao).
+      const closed = await app.inject({
+        method: 'PATCH', url: `/api/v1/agreements/${agreementId}`, headers: finance, payload: { closedAt: '2026-10-27T00:00:00Z' }
+      });
+      expect(closed.statusCode).toBe(200);
+      expect(String((closed.json() as { closedAt: string }).closedAt)).toContain('2026-10-27');
+      const reopened = await app.inject({
+        method: 'PATCH', url: `/api/v1/agreements/${agreementId}`, headers: finance, payload: { closedAt: null }
+      });
+      expect(reopened.statusCode).toBe(200);
+      expect(reopened.json()).toMatchObject({ closedAt: null });
+
+      const audited = await pool.query<{ action: string }>(
+        `SELECT action FROM audit_logs WHERE entity_id = ANY($1::uuid[])`,
+        [[guardianId, contactId, agreementId]]
+      );
+      expect(audited.rows.map((row) => row.action)).toEqual(
+        expect.arrayContaining(['agreement.updated', 'guardian.updated', 'student_contact.updated'])
+      );
+    });
   });
 
   describe('patchRow', () => {

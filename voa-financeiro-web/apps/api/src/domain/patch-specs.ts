@@ -100,6 +100,66 @@ export const patchSpecs = {
       status: 'status'
     }
   },
+  guardians: {
+    table: 'guardians',
+    softDelete: true,
+    entityType: 'guardians',
+    auditAction: 'guardian.updated',
+    returning: `id, student_id AS "studentId", customer_id AS "customerId", full_name AS "fullName",
+      document_number AS "documentNumber", document_rg AS "documentRg", marital_status AS "maritalStatus",
+      occupation, is_financial AS "isFinancial", is_verified AS "isVerified",
+      created_at AS "createdAt", updated_at AS "updatedAt"`,
+    schema: z.object({
+      /**
+       * The guardian -> paying customer promotion is the assisted reconciliation of the migration:
+       * the loader always leaves `customer_id` NULL (a legacy name never becomes a customer by
+       * itself) and the promotion is a deliberate, audited PATCH. `null` unlinks again.
+       */
+      customerId: z.string().uuid().nullable(),
+      fullName: text(200).min(2),
+      documentNumber: nullableText(30),
+      documentRg: nullableText(20),
+      /** Free-form label of the legacy (`Casada`, `solteiro`, `Uniao Estavel`...): no CHECK exists. */
+      maritalStatus: nullableText(40),
+      occupation: nullableText(80),
+      isFinancial: z.boolean(),
+      isVerified: z.boolean()
+    }).partial().strict(),
+    columns: {
+      customerId: 'customer_id',
+      fullName: 'full_name',
+      documentNumber: 'document_number',
+      documentRg: 'document_rg',
+      maritalStatus: 'marital_status',
+      occupation: 'occupation',
+      isFinancial: 'is_financial',
+      isVerified: 'is_verified'
+    }
+  },
+  studentContacts: {
+    table: 'student_contacts',
+    softDelete: true,
+    entityType: 'student_contacts',
+    auditAction: 'student_contact.updated',
+    returning: `id, student_id AS "studentId", type, value, is_primary AS "isPrimary",
+      is_verified AS "isVerified", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
+    schema: z.object({
+      /** The three labels the legacy actually carries (`phone`, `email`, `address`) plus `other`. */
+      type: z.enum(['phone', 'email', 'address', 'other']),
+      value: text(200),
+      isPrimary: z.boolean(),
+      isVerified: z.boolean(),
+      /** `inactive` keeps the 5.695 contacts the legacy marked as DESATIVADO without deleting them. */
+      status: z.enum(['active', 'inactive'])
+    }).partial().strict(),
+    columns: {
+      type: 'type',
+      value: 'value',
+      isPrimary: 'is_primary',
+      isVerified: 'is_verified',
+      status: 'status'
+    }
+  },
   agreements: {
     table: 'agreements',
     softDelete: true,
@@ -107,20 +167,28 @@ export const patchSpecs = {
     auditAction: 'agreement.updated',
     returning: `id, school_id AS "schoolId", customer_id AS "customerId", student_id AS "studentId", reference,
       total_amount AS "totalAmount", installments_count AS "installmentsCount", status,
-      created_at AS "createdAt", updated_at AS "updatedAt"`,
+      closed_at AS "closedAt", created_at AS "createdAt", updated_at AS "updatedAt"`,
     schema: z.object({
       studentId: z.string().uuid().nullable(),
       reference: nullableText(200),
       totalAmount: z.number().nonnegative(),
       installmentsCount: z.number().int().positive().max(120),
-      status
+      status,
+      /**
+       * Closing date of the agreement. It belongs to the application (and to this PATCH), never to
+       * the migration: `Pagamento_DataFechamento` stays deferred because 830 of its 1.497 values
+       * precede the first due date (that is the formalisation date, not the closure).
+       * `null` reopens the agreement.
+       */
+      closedAt: z.string().datetime({ offset: true }).nullable()
     }).partial().strict(),
     columns: {
       studentId: 'student_id',
       reference: 'reference',
       totalAmount: 'total_amount',
       installmentsCount: 'installments_count',
-      status: 'status'
+      status: 'status',
+      closedAt: 'closed_at'
     }
   },
   installments: {

@@ -51,4 +51,54 @@ describe('health endpoints', () => {
   });
 });
 
+describe('guardioes e contatos do aluno', () => {
+  const studentId = '8a1f5b64-7d3e-4f5a-9b0e-3f6f2d1c4a70';
+  const rowId = '0c2b7a91-5e4d-4c8b-9a3f-2b1d6e8f0c11';
+
+  it('lista guardioes e contatos do aluno somente com banco disponivel', async () => {
+    for (const path of ['guardians', 'contacts']) {
+      const response = await app.inject({ method: 'GET', url: `/api/v1/students/${studentId}/${path}`, headers: authHeaders() });
+      expect({ path, status: response.statusCode }).toEqual({ path, status: 503 });
+      expect(response.json()).toMatchObject({ code: 'DATABASE_UNAVAILABLE' });
+    }
+  });
+
+  it('recusa id de aluno malformado antes de tocar o banco', async () => {
+    for (const path of ['guardians', 'contacts']) {
+      const response = await app.inject({ method: 'GET', url: `/api/v1/students/nao-e-uuid/${path}`, headers: authHeaders() });
+      expect({ path, status: response.statusCode }).toEqual({ path, status: 400 });
+    }
+  });
+
+  it('valida o corpo do PATCH do guardiao antes de exigir o banco', async () => {
+    const accepted = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/guardians/${rowId}`,
+      headers: authHeaders(),
+      payload: { customerId: null, isVerified: true, maritalStatus: 'Casada' }
+    });
+    expect(accepted.statusCode).toBe(503);
+
+    const rejected = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/guardians/${rowId}`,
+      headers: authHeaders(),
+      payload: { customerId: 'nao-e-uuid' }
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toMatchObject({ code: 'INVALID_REQUEST' });
+  });
+
+  it('recusa rotulo de status do contato do aluno fora do canonico', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/student-contacts/${rowId}`,
+      headers: authHeaders(),
+      payload: { status: 'desativado' }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'INVALID_REQUEST' });
+  });
+});
+
 afterAll(async () => app.close());

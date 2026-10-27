@@ -400,6 +400,28 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     return reply.code(201).send(result.rows[0]);
   });
 
+  app.get('/api/v1/students/:studentId/guardians', { preHandler: requireAuthentication }, async (request, reply) => {
+    const { studentId } = request.params as { studentId: string };
+    // Um id malformado e erro do cliente: responde 400 mesmo com o banco fora.
+    if (!z.string().uuid().safeParse(studentId).success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid student id', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const result = await pool.query(`SELECT id, student_id AS "studentId", customer_id AS "customerId", full_name AS "fullName",
+        document_number AS "documentNumber", document_rg AS "documentRg", marital_status AS "maritalStatus", occupation,
+        is_financial AS "isFinancial", is_verified AS "isVerified", created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM guardians WHERE student_id = $1 AND deleted_at IS NULL ORDER BY is_financial DESC, full_name`, [studentId]);
+    return { items: result.rows };
+  });
+
+  app.get('/api/v1/students/:studentId/contacts', { preHandler: requireAuthentication }, async (request, reply) => {
+    const { studentId } = request.params as { studentId: string };
+    if (!z.string().uuid().safeParse(studentId).success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid student id', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const result = await pool.query(`SELECT id, student_id AS "studentId", type, value, is_primary AS "isPrimary",
+        is_verified AS "isVerified", status, created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM student_contacts WHERE student_id = $1 AND deleted_at IS NULL ORDER BY is_primary DESC, type, value`, [studentId]);
+    return { items: result.rows };
+  });
+
   app.get('/api/v1/agreements', { preHandler: requireAuthentication }, async (request, reply) => {
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
     const query = request.query as { customerId?: string; schoolId?: string; limit?: string };
@@ -511,6 +533,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
 
   app.patch('/api/v1/payments/:id', { preHandler: requirePermission('finance:write') }, (request, reply) =>
     runPatch(request, reply, patchSpecs.payments));
+
+  app.patch('/api/v1/guardians/:id', { preHandler: requirePermission('catalog:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.guardians));
+
+  app.patch('/api/v1/student-contacts/:id', { preHandler: requirePermission('catalog:write') }, (request, reply) =>
+    runPatch(request, reply, patchSpecs.studentContacts));
 
   app.get('/api/v1/schools/:schoolId/retention', { preHandler: requireAuthentication }, async (request, reply) => {
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });

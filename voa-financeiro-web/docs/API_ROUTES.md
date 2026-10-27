@@ -11,9 +11,12 @@ Todas as rotas de dominio sao versionadas sob `/api/v1`. Observabilidade, identi
 - `GET /api/v1/auth/me`
 - `GET/POST /api/v1/schools`, `GET/POST /api/v1/customers`, `GET/POST /api/v1/students`
 - `GET/POST /api/v1/customers/:customerId/contacts`
+- `GET /api/v1/students/:studentId/guardians` e `GET /api/v1/students/:studentId/contacts` - responsavel
+  (`guardians`, migration `0011`) e contatos do aluno (`student_contacts`, `0010` + `0011`); um id de aluno
+  malformado responde `400` mesmo sem banco
 - `GET/POST /api/v1/agreements`, `GET/POST /api/v1/installments`, `GET/POST /api/v1/payments`
 - `GET /api/v1/schools/:schoolId/retention`
-- `PATCH /api/v1/schools|customers|students/:id` (`catalog:write`) e
+- `PATCH /api/v1/schools|customers|students|guardians|student-contacts/:id` (`catalog:write`) e
   `PATCH /api/v1/agreements|installments|payments/:id` (`finance:write`)
 - `POST /api/v1/migrations/batches` e `GET /api/v1/migrations/batches[/:id]` (`migration:write` / `read`)
 - `POST /api/v1/migrations/batches/:id/validate|commit` e `POST /api/v1/migrations/errors/:id/resolve` (`migration:write`), com `GET /api/v1/migrations/batches/:id/errors` (`read`)
@@ -47,7 +50,9 @@ Campos por entidade:
 | `schools` | `legalName`, `tradeName`, `documentNumber`, `status`, `retentionEnabled`, `retentionTargetAmount` |
 | `customers` | `fullName`, `documentNumber`, `email`, `phone`, `status` |
 | `students` | `schoolId`, `customerId`, `fullName`, `documentNumber`, `enrollmentNumber`, `status` |
-| `agreements` | `studentId`, `reference`, `totalAmount`, `installmentsCount`, `status` |
+| `guardians` | `customerId`, `fullName`, `documentNumber`, `documentRg`, `maritalStatus`, `occupation`, `isFinancial`, `isVerified` |
+| `studentContacts` | `type`, `value`, `isPrimary`, `isVerified`, `status` |
+| `agreements` | `studentId`, `reference`, `totalAmount`, `installmentsCount`, `status`, `closedAt` |
 | `installments` | `dueDate`, `originalAmount`, `status` |
 | `payments` | `status`, `retainedAmount`, `releasedAmount`, `retentionStatus`, `retentionPercentage`, `retentionApprovedAt`, `retentionScheduledMonth`, `retentionReleasedAt` |
 
@@ -56,6 +61,17 @@ Campos por entidade:
 `pending_approval`, `approved`, `released`, `not_applicable` ou `direct_payment`.
 `GET /api/v1/payments` devolve as mesmas colunas `retention*`, entao a tela nao precisa de uma
 segunda leitura para acompanhar o repasse.
+
+Campos com regra propria:
+
+- `agreements.closedAt`: data de encerramento em ISO 8601 (`2026-10-27T00:00:00Z`); `null` reabre. A
+  coluna **nao** e preenchida pela migracao (`Pagamento_DataFechamento` ficou `defer`, ver
+  `docs/FIELD_MAPPING_TRIAGE.md`).
+- `guardians.customerId`: promocao assistida do responsavel a cliente pagador (o loader sempre deixa
+  `null`); `null` desfaz o vinculo. E a trilha de conciliacao guardiao <-> cliente.
+- `studentContacts.type`: `phone`, `email`, `address` ou `other` (os tres primeiros sao os rotulos que
+  o legado carrega); `studentContacts.status`: `active` ou `inactive` (preserva os 5.695 contatos
+  `DESATIVADO` sem apagar linha).
 
 ## Contrato da migracao (staging)
 

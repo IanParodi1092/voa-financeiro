@@ -17,9 +17,9 @@ python -m pip install -r scripts/requirements.txt
 - `npm run db:stage-dry-run` cria/atualiza o lote de staging.
 - `npm run db:validate-staging` valida o lote de staging e escreve apenas achados e relatorios.
 - `npm run db:field-dictionary` resolve o dicionario de campos (fase 2) contra o schema real e regrava `docs/FIELD_MAPPING_DICTIONARY.md`; nao toca no banco.
-- `npm run db:field-dictionary-check` faz o mesmo com `--from-staging --gate approved`, comparando as colunas do workbook com o payload do lote e falhando enquanto houver decisao pendente.
+- `npm run db:field-dictionary-check` faz o mesmo com `--from-staging --gate approved`, comparando as colunas do workbook com o payload do lote e falhando enquanto houver decisao pendente (hoje sai `0`: nenhuma coluna em `review` e nenhum `map` sem `status: "confirmed"`).
 - `npm run db:load-canonical` executa a carga canonica (fase 7) como dry-run: monta o plano por entidade, conta as linhas e registra os achados sem escrever nada.
-- `npm run db:load-canonical-commit` faz a carga real (`--commit`). Ela e idempotente e hoje carrega todas as tabelas mapeadas sem flag: as 11 propostas que existiam (`Pagamento_Nome -> agreements.reference`, `guardians` e `student_contacts`) foram confirmadas pelo operador em 2026-10-27. `--allow-proposed <tabela>` continua existindo como rede de seguranca para uma regra `status: "proposed"` nova, mas com o dicionario atual nao muda nada.
+- `npm run db:load-canonical-commit` faz a carga real (`--commit`). Ela e idempotente e hoje carrega todas as tabelas mapeadas sem flag: as 11 propostas que existiam (`Pagamento_Nome -> agreements.reference`, `guardians` e `student_contacts`) foram confirmadas pelo operador em 2026-10-27. `--allow-proposed <tabela>` continua existindo como rede de seguranca para uma regra `status: "proposed"` nova, mas com o dicionario atual nao muda nada. `--enrich-reused` (so com `--commit`) completa as colunas `NULL` das linhas que foram **reutilizadas** pela chave legada, sempre com `COALESCE` (o valor gravado vence): foi o que materializou `agreements.reference` em `1.504` das `1.505` linhas sem reescrever nada. `asaas_charges` nao esta no plano de carga (decisao de 2026-10-27, ver `docs/MIGRATION_WORKFLOW.md`).
 - `npm run db:backfill-legacy-provenance` carimba `legacy_source`/`legacy_table`/`legacy_id` nas linhas de `contacts` e `installments` que foram gravadas antes da `0009`, recalculando o UUID deterministico (`uuid5("aba:linha")`) de cada linha de origem; dry-run por padrao, grava com `--commit`. Ele so reporta divergencia (linha com chave gravada diferente da origem) e nunca sobrescreve. A ordem e `db:migrate` -> backfill `--commit` -> carga: habilitar o provedor de chave legada antes do carimbo faz a carga recusar as linhas existentes como duplicidade.
 
 Os scripts leem `DATABASE_URL`/`DIRECT_DATABASE_URL` do `.env` do monorepo e nunca imprimem valores de colunas sensiveis.
@@ -76,9 +76,11 @@ Sem `TEST_DATABASE_URL` o bloco inteiro e ignorado, entao `npm test` permanece v
 banco. Os testes cobrem login (sucesso e falha auditada), cookie `voa_refresh` httpOnly,
 `/auth/me`, rotacao do refresh (reuso do token antigo recebe 401), RBAC (`viewer` recebe 403 nas
 escritas), a cadeia `schools`/`customers`/`students`/`contacts`/`agreements`/`installments`/`payments`,
-os `PATCH` parciais (inclusive o gate de retencao) e as rotas de migracao (registro idempotente do
+os `PATCH` parciais (inclusive o gate de retencao, o `closedAt` do acordo e os `PATCH` de `guardians`
+e `student-contacts`) e as rotas de migracao (registro idempotente do
 lote, `validate`/`commit` com bloqueio aberto, triagem de achado) - com `GET /audit-logs` restrito ao
-`admin`.
+`admin`. `npm test` (unitario) cobre as mesmas rotas sem banco: os `GET` de guardiao/contato do aluno
+respondem `503` sem pool e `400` com id malformado, e o corpo do `PATCH` e validado antes do banco.
 
 Para criar o primeiro administrador no banco local, aponte as duas variaveis (`create-admin` prefere
 `DIRECT_DATABASE_URL`) e informe e-mail e senha temporarios. O script `auth:create-admin` vive no
