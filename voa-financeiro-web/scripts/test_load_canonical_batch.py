@@ -1327,23 +1327,37 @@ class RealDictionaryTests(unittest.TestCase):
         )
         self.assertEqual({rule["match"] for rule in providers}, {"ID"})
 
-    def test_financial_children_are_ready_except_asaas_charges(self) -> None:
+    def test_financial_children_are_ready_and_charges_leave_the_load(self) -> None:
+        """`asaas_charges` saiu do plano de carga (decisao de 2026-10-27).
+
+        A tabela exige `asaas_customer_id` (NOT NULL) e a aba de parcelas nao carrega o cliente
+        Asaas, entao nenhuma tabela pode ser construida sem inventar as cinco colunas obrigatorias.
+        As quatro colunas ficam `defer` e a entidade deixa de aparecer no plano: `installments`,
+        `payments` e `asaas_customers` seguem prontos.
+        """
         for table in ("installments", "payments", "asaas_customers"):
             self.assertEqual(self.tables[table].status, "ready", table)
             self.assertEqual(self.tables[table].proposed_columns, [], table)
-        charges = self.tables["asaas_charges"]
-        self.assertEqual(charges.status, "blocked")
-        self.assertEqual(charges.blocked_reason, "required_columns_uncovered")
-        self.assertEqual(
-            sorted(charges.missing_required),
-            ["asaas_customer_id", "billing_type", "due_date", "environment", "value"],
+        self.assertNotIn("asaas_charges", self.tables)
+        rules = self.dictionary["sheets"]["TBL_PAGAMENTO_LISTAGEM"]
+        self.assertNotIn("asaas_charges.installment_id", rules.get("links") or {})
+        charges = [rule for rule in rules["columns"] if rule.get("defer") == "billing_integration_not_modeled"]
+        self.assertLessEqual(
+            {
+                "Pagamento_Banco_Status",
+                "Pagamento_CopiaeCola",
+                "Pagamento_LinkPag",
+                "Pagamento_PagAsaas_ID",
+            },
+            {rule["match"] for rule in charges},
         )
 
     def test_the_charge_status_default_comes_from_the_migration(self) -> None:
-        """0008 gives `asaas_charges.status` a DEFAULT, so an empty invoice status is not an error.
+        """0008 deixou `asaas_charges.status` com DEFAULT `unknown`.
 
-        The 4.799 blank labels of `Pagamento_Banco_Status` (and the single `z` junk label) fall back
-        to that default, reported as LOAD_VALUE_DEFAULTED instead of dropping the row.
+        A cobranca do legado saiu do plano de carga em 2026-10-27, mas o DEFAULT continua sendo o
+        que sustenta a tabela na integracao nova: a coluna nao entra em `required_columns` e um
+        status ausente cai em `unknown` em vez de recusar a linha.
         """
         self.assertNotIn("status", required_columns("asaas_charges", self.schema))
         defaults = resolve_defaults(self.schema, {"asaas_charges": None})

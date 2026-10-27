@@ -83,14 +83,15 @@
     "installments_description": "installments nao tem descricao/tipo do debito (Divida_Listagem.Tipo_de_debito, Obs)",
     "agreements_source_resolution": "resolvido (decisao de 2026-09-25, registrada no dicionario em 2026-10-22): agreements.legacy_id vem de TBL_PAGAMENTO; TBL_DIVIDA e TBL_DIVIDA_LISTAGEM ficam fora do canonico ate existir modelo de inadimplencia (entidade debts/debt_items)",
     "agreements_type": "agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO)",
-    "agreements_closed_at": "resolvido no schema pela migration 0010 (agreements.closed_at): a coluna existe e continua sem mapeamento porque a semantica do fechamento (acordo encerrado x contrato assinado) segue em revisao",
+    "agreements_closed_at": "resolvido no schema pela migration 0010 (agreements.closed_at), mas a coluna e da aplicacao e nao da migracao: em 2026-10-27 Pagamento_DataFechamento ficou em defer/no_canonical_destination porque 830 dos 1.497 valores sao anteriores ao primeiro vencimento (data de formalizacao, nao de encerramento) e gravar isso em closed_at marcaria acordo ativo como encerrado",
     "schools_contact_address": "schools nao tem contato nem endereco; contacts e restrito a customers",
     "students_contact": "resolvido no schema pelas migrations 0010 (student_contacts, espelho de contacts apontando para students) e 0011 (student_contacts.status) e mapeado desde a 0011: TBL_ENDTEL entra como `proposed` com type/value/is_primary/status, 41.117 das 47.562 linhas carregaveis (457 tem tipo e valor vazio e 5.988 nao tem tipo, valor nem status)",
     "customers_address": "customers nao tem endereco estruturado",
     "customers_document_type": "customers nao tem document_type (cpf/cnpj) exigido por CANONICAL_DATA_RULES.md",
     "contacts_legacy_id": "resolvido pela migration 0009 (colunas legacy_* em contacts) e por scripts/backfill_legacy_provenance.py, que carimba os contatos ja gravados antes de a carga usar a chave legada",
     "students_guardian_details": "resolvido no schema pela migration 0011 (guardians): RG, profissao e estado civil do responsavel entram em guardians.document_rg/occupation/marital_status como `proposed`, junto com o nome (Aluno.Responsavel_Financeiro) e o CPF (Aluno.CPFResponsavel)",
-    "users_legacy_import": "resolvido no schema pela migration 0010 (users.legacy_source/legacy_table/legacy_id + indice unico): a importacao continua presa a politica de credencial, porque users.password_hash e NOT NULL e a senha do legado nao migra"
+    "users_legacy_import": "resolvido pela decisao de 2026-10-27: os 28 usuarios do legado nao migram. users.legacy_* (0010) existe para rastreabilidade, mas a identidade nasce em auth:create-admin porque users.password_hash e NOT NULL e a senha do legado nao pode ser reaproveitada",
+    "asaas_charges_history": "decisao de 2026-10-27: as cobrancas Asaas do legado (6.369 external_id distintos em 15.535 parcelas) nao entram pela migracao. A carga exige asaas_customer_id (NOT NULL), billing_type, environment, value e due_date, e a aba de parcelas (TBL_PAGAMENTO_LISTAGEM) nao carrega o cliente Asaas: Pagamento_CliAsaas_ID e vazio nela e o vinculo so existe em TBL_PAGAMENTO.Pagamento_CliAsaas_ID (1.122 preenchidos). A fonte da verdade passa a ser a integracao Asaas do backend, que reconcilia por external_id (asaas_charges.external_id e UNIQUE); o valor financeiro ja esta em payments e installments"
   },
   "sheets": {
     "TBL_ESCOLA": {
@@ -249,7 +250,7 @@
         { "match": "Pagamento.Aluno_ID", "map": "agreements.student_id", "type": "reference", "ref": "students", "normalization": "trim", "status": "confirmed", "note": "1.568 preenchidos, 4 vazios; contem listas ('102;103')" },
         { "match": "Pagamento.UsuarioFechamento", "defer": "user_link_requires_review" },
         { "match": "Pagamento_USUARIOCRIACAO", "defer": "user_link_requires_review" },
-        { "match": "Pagamento_DataFechamento", "review": "pending_policy", "gap": "agreements_closed_at", "note": "1.497 de 1.572 preenchidos; agreements.closed_at existe desde a 0010 e a coluna segue em revisao porque nao esta definido se a data e o fechamento do acordo (parcelamento encerrado) ou a assinatura do contrato" },
+        { "match": "Pagamento_DataFechamento", "defer": "no_canonical_destination", "note": "1.497 de 1.572 preenchidos (2021 a 2026, todos datetime ISO). Decisao de 2026-10-27: nao vira agreements.closed_at. Cruzando com as parcelas de staging, 830 dos 1.497 valores sao ANTERIORES ao primeiro vencimento, 418 caem entre parcelas e 191 sao posteriores a ultima: o rotulo `fechamento` da origem e a data de formalizacao do acordo, nao o encerramento do parcelamento. Gravar isso em closed_at marcaria 1.391 acordos que ainda tem parcela aberta como encerrados. A coluna fica com a aplicacao (PATCH /api/v1/agreements/:id) e o valor segue no payload de staging" },
         { "match": "Pagamento.Tipo", "defer": "agreement_attrs_not_modeled", "gap": "agreements_type", "note": "JUDICIAL, EXTRAJUDICIAL, CEJUSC, PERSONALIZADO" },
         { "match": "Pagamento_SucumbenciaTotal", "defer": "agreement_attrs_not_modeled" },
         { "match": "Pagamento_SucumbenciaResto", "defer": "agreement_attrs_not_modeled" },
@@ -273,10 +274,9 @@
     "TBL_PAGAMENTO_LISTAGEM": {
       "target_entity": "installments",
       "row_kind": "child",
-      "notes": "15.535 parcelas de acordo. Origem confirmada de installments e payments (status `confirmed`, operador 25/09). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments/asaas_charges a parcela criada pela mesma linha de origem.",
+      "notes": "15.535 parcelas de acordo. Origem confirmada de installments e payments (status `confirmed`, operador 25/09). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments a parcela criada pela mesma linha de origem. `asaas_charges` fica fora da carga desde 2026-10-27: a aba nao carrega o cliente Asaas e as cinco colunas obrigatorias da tabela nao tem origem (ver gap asaas_charges_history).",
       "links": {
-        "payments.installment_id": "row:installments",
-        "asaas_charges.installment_id": "row:installments"
+        "payments.installment_id": "row:installments"
       },
       "columns": [
         { "match": "Title", "ignore": "denormalized_display_name" },
@@ -288,11 +288,11 @@
         { "match": "Pagamento_Listagem.Valor_Pago", "map": "payments.amount", "type": "numeric", "normalization": "min_positive", "required": true, "status": "confirmed", "note": "13.245 preenchidos; payments so existe quando o valor pago e > 0 (vazio/zero/negativo descarta a linha)" },
         { "match": "Pagamento_Listagem.Data_Pagamento", "map": "payments.paid_at", "type": "datetime", "normalization": "iso_datetime", "status": "confirmed", "note": "11.983 preenchidos" },
         { "match": "Pagamento_Lista.ValorRetido", "map": "payments.retained_amount", "type": "numeric", "normalization": "money", "status": "confirmed", "note": "retencao por parcela: min(valor_pago * percentual, meta da escola)" },
-        { "match": "Pagamento_PagAsaas_ID", "map": "asaas_charges.external_id", "type": "text", "normalization": "trim", "status": "confirmed", "note": "6.369 distintos = unico na origem" },
-        { "match": "Pagamento_LinkPag", "map": "asaas_charges.invoice_url", "type": "url", "normalization": "trim", "status": "confirmed" },
-        { "match": "Pagamento_CopiaeCola", "map": "asaas_charges.pix_qr_code", "type": "text", "normalization": "trim", "status": "confirmed" },
+        { "match": "Pagamento_PagAsaas_ID", "defer": "billing_integration_not_modeled", "note": "6.369 ids distintos em 15.535 linhas. A cobranca do legado nao entra no canonico por falta de origem para asaas_charges.asaas_customer_id (NOT NULL) e para billing_type/environment/value/due_date; preencher com constante derivaria dado inexistente. O id permanece no staging e a integracao Asaas do backend reconcilia por external_id" },
+        { "match": "Pagamento_LinkPag", "defer": "billing_integration_not_modeled", "note": "link de pagamento gerado no Asaas antigo; expira junto com a cobranca que a integracao nova recria" },
+        { "match": "Pagamento_CopiaeCola", "defer": "billing_integration_not_modeled", "note": "Pix copia-e-cola do Asaas antigo; expira junto com a cobranca" },
         { "match": "Pagamento_Lista.Status", "map": "payments.retention_status", "type": "code", "normalization": "value_map_ci", "status": "confirmed", "values": { "aguardando aprovacao": "pending_approval", "repasse aprovado": "approved", "repasse realizado": "released", "nao existe repasse": "not_applicable", "pagamento direto": "direct_payment" }, "note": "5 rotulos, todos preenchidos (15.535 linhas): AGUARDANDO APROVACAO 7.524, REPASSE REALIZADO 6.993, NAO EXISTE REPASSE 744, PAGAMENTO DIRETO 176, REPASSE APROVADO 98. Destino criado pela migration 0008 (lacuna payments_retention_approval), com o CHECK de rotulos na coluna" },
-        { "match": "Pagamento_Banco_Status", "map": "asaas_charges.status", "type": "code", "normalization": "value_map_ci", "required": true, "status": "confirmed", "values": { "baixado": "paid", "pago automatico": "paid", "pagamento manual": "paid", "pago colegio": "paid", "cartao itau": "paid", "pendente": "pending", "atrasado": "overdue" }, "note": "9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). O vazio e o `z` caem no DEFAULT 'unknown' criado pela migration 0008 e saem como LOAD_VALUE_DEFAULTED; CARTAO ITAU entra como paid e o billing_type CREDIT_CARD fica registrado como decisao de operacao em docs/MIGRATION_WORKFLOW.md" },
+        { "match": "Pagamento_Banco_Status", "defer": "billing_integration_not_modeled", "note": "9 rotulos em 15.535 linhas (vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1). O mapa para asaas_charges.status sai junto com a entidade (ver gap asaas_charges_history): o rotulo do boleto nao muda o pagamento, que ja vem de payments" },
         { "match": "Pagamento_Lista.DataAprovacao", "map": "payments.retention_approved_at", "type": "date", "normalization": "iso_date", "status": "confirmed", "note": "7.091 preenchidos (2020-11-09 a 2026-03-30); o legado grava datetime ISO (`2024-06-04T00:00:00`) e a normalizacao usa a parte da data" },
         { "match": "Pagamento_Lista.MesAnoProgramacaoRepasse", "map": "payments.retention_scheduled_month", "type": "text", "normalization": "month_year", "status": "confirmed", "note": "7.087 preenchidos no formato `MM AAAA` (`09 2024`, 01 2021 a 12 2025); a normalizacao `month_year` entrega `AAAA-MM` como o CHECK de payments.retention_scheduled_month exige" },
         { "match": "Pagamento_Lista.MesAnoRepasseRealizado", "map": "payments.retention_released_at", "type": "date", "normalization": "iso_date", "status": "confirmed", "note": "6.875 preenchidos (2020-12-07 a 2026-03-06) como datetime ISO: apesar do nome, a coluna guarda a data em que o repasse foi realizado" },
@@ -333,7 +333,7 @@
       "row_kind": "entity-deferred",
       "notes": "28 usuarios internos. Nenhuma senha e migrada: USER_SENHA/USER_PASS sao credenciais comprometidas. Entrada canonica exige email novo e redefinicao de senha.",
       "columns": [
-        { "match": "ID", "review": "user_import_requires_credential_reset", "gap": "users_legacy_import", "note": "users.legacy_* existe desde a 0010 (28 ids); a entrada continua bloqueada porque users.password_hash e NOT NULL e a senha do legado nao migra" },
+        { "match": "ID", "defer": "user_import_requires_credential_reset", "note": "Decisao de 2026-10-27: os 28 usuarios internos nao entram pela migracao. users.password_hash e NOT NULL e a senha do legado (USER_SENHA/USER_PASS) nao pode ser reaproveitada, entao a carga exigiria senha sintetica e redefinicao em massa de todo mundo. A identidade nasce em auth:create-admin e users.legacy_* (0010) fica para rastreabilidade futura" },
         { "match": "USER_USUARIO", "defer": "user_import_requires_credential_reset", "note": "28 logins distintos; base para o email canonico" },
         { "match": "USER_NOME", "defer": "user_import_requires_credential_reset", "note": "viraria users.display_name" },
         { "match": "USER_EMAIL", "defer": "user_import_requires_credential_reset", "note": "somente 1 preenchido; email precisa ser reconstruido" },

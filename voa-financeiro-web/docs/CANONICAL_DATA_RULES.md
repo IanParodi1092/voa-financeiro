@@ -91,7 +91,7 @@ Tabela canonica: `guardians` (migration `0011`), filha de `students`.
 
 - `agreements.id`: UUID do acordo local.
 - `agreements.legacy_id`: origem de `TBL_PAGAMENTO`/`TBL_DIVIDA` conforme mapeamento confirmado.
-- `agreements.closed_at`: data de fechamento do acordo (nullable desde a `0010`); continua sem carga porque a origem (`Pagamento_DataFechamento`) ainda nao teve a semantica confirmada (fechamento x assinatura).
+- `agreements.closed_at`: data de encerramento do acordo (nullable desde a `0010`), escrita **pela aplicacao** (`PATCH /api/v1/agreements/:id`, campo `closedAt`; `null` reabre). A migracao nao preenche: `Pagamento_DataFechamento` ficou `defer` porque 830 dos 1.497 valores sao anteriores ao primeiro vencimento (data de formalizacao, nao de encerramento) e gravar isso marcaria acordo ativo como encerrado.
 - `installments.id`: UUID unico de cada parcela.
 - `installments.installment_number`: numero da parcela dentro do acordo.
 - Regra forte: `(agreement_id, installment_number)` unica.
@@ -105,6 +105,7 @@ Separar sempre os identificadores:
 - `charges.id`: UUID da cobranca local.
 - `charges.legacy_id`: identificador legado, quando existir.
 - `asaas_charges.external_id`: ID da cobranca no Asaas.
+- `asaas_charges` **nao recebe historico do legado** (decisao de 2026-10-27): as 6.369 cobrancas da origem nao tem o cliente Asaas na aba de parcelas e a tabela exige `asaas_customer_id` (NOT NULL), `billing_type`, `environment`, `value` e `due_date`. A tabela e populada pela integracao Asaas do backend, reconciliando por `external_id` (UNIQUE); o valor financeiro do legado ja esta em `installments`/`payments`.
 - `payments.id`: UUID do pagamento local.
 - `payments.external_id`: ID do pagamento/evento externo.
 - `boleto_number`, `digitable_line`, `barcode` e `invoice_url`: valores do boleto, com indices unicos quando preenchidos.

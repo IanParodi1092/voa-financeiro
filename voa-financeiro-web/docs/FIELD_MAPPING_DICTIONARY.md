@@ -9,18 +9,18 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 |---|---:|
 | Abas inventariadas | 60 |
 | Colunas inventariadas | 856 |
-| Colunas com `map` | 50 |
+| Colunas com `map` | 46 |
 | Colunas `ignore` | 79 |
-| Colunas `defer` | 725 |
-| Colunas `review` | 2 |
+| Colunas `defer` | 731 |
+| Colunas `review` | 0 |
 | Colunas `unmapped` | 0 |
 | Problemas estruturais | 0 |
-| Itens de politica pendentes | 2 |
+| Itens de politica pendentes | 0 |
 
 ## Portao de aprovacao
 
 - Estrutural: OK. Todo mapa aponta para tabela/coluna existente no schema canonico.
-- Aprovacao: BLOQUEADA (2 item(ns) `review` ou mapeamento nao confirmado). Nenhuma carga canonica pode rodar antes da decisao de negocio.
+- Aprovacao: LIBERADA para revisao final do lote.
 
 ## Conferencia staging x workbook
 
@@ -48,7 +48,6 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | TBL_ALUNO | `guardians.student_id` | `row:students` |
 | TBL_PAGAMENTO | `agreements.customer_id` | `row:customers` |
 | TBL_PAGAMENTO | `asaas_customers.customer_id` | `row:customers` |
-| TBL_PAGAMENTO_LISTAGEM | `asaas_charges.installment_id` | `row:installments` |
 | TBL_PAGAMENTO_LISTAGEM | `payments.installment_id` | `row:installments` |
 
 ## Abas mapeadas para entidade canonica
@@ -62,9 +61,9 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | TBL_DIVIDA_LISTAGEM | `agreements` | 11 | 0 | 4 | 7 | 0 |
 | TBL_ENDTEL | `student_contacts` | 9 | 6 | 2 | 1 | 0 |
 | TBL_ESCOLA | `schools` | 16 | 5 | 5 | 6 | 0 |
-| TBL_PAGAMENTO | `agreements` | 24 | 6 | 7 | 10 | 1 |
-| TBL_PAGAMENTO_LISTAGEM | `installments` | 34 | 17 | 13 | 4 | 0 |
-| TBL_USER | `users` | 13 | 0 | 3 | 9 | 1 |
+| TBL_PAGAMENTO | `agreements` | 24 | 6 | 7 | 11 | 0 |
+| TBL_PAGAMENTO_LISTAGEM | `installments` | 34 | 13 | 13 | 8 | 0 |
+| TBL_USER | `users` | 13 | 0 | 3 | 10 | 0 |
 
 ## Detalhe por aba
 
@@ -1144,7 +1143,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 - Entidade canonica: agreements
 - Tipo de linha: entity
 - Observacoes: 1.572 acordos/pagamentos e a origem confirmada de agreements (fase 7). Decisao do operador (25/09): o cliente pagador nunca existiu como coluna no app legado (TBL_CLIENTE e registro institucional de CNPJ/CNAE/INEP e nenhuma ponte por e-mail/telefone/nome/CNPJ fechou), entao ele e sintetizado desta propria aba - customers.legacy_id = Pagamento.ID, customers.full_name = Pagamento.Nome_Aluno e asaas_customers.external_id = Pagamento.CliAsaas_ID com ambiente `production`. agreements.customer_id entra por `links: row:customers` e total_amount/installments_count sao derivados de TBL_PAGAMENTO_LISTAGEM.
-- Colunas: 24 (map=6, ignore=7, defer=10, review=1, unmapped=0)
+- Colunas: 24 (map=6, ignore=7, defer=11, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
@@ -1164,7 +1163,7 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Pagamento_Nome | map | agreements.reference | text | collapse_ws |  |  | rotulo do lote de acordo ('Acordo 2024': 557, 'Acordo 2023': 438, 'Acordo 2025': 186; 73 rotulos em 1.570 linhas). Agrupa lotes, nao identifica acordo - a identidade continua em agreements.legacy_id (TBL_PAGAMENTO.ID); nenhuma outra coluna escrevia em agreements.reference. Confirmado pelo operador em 2026-10-27 depois da validacao em tela, entao a cadeia financeira deixou de exigir --allow-proposed agreements |
 | Pagamento_USUARIOCRIACAO | defer |  |  |  |  |  | user_link_requires_review |
 | Pagamento_StatusAcordo | ignore |  |  |  |  |  | empty_column |
-| Pagamento_DataFechamento | review |  |  |  |  |  | 1.497 de 1.572 preenchidos; agreements.closed_at existe desde a 0010 e a coluna segue em revisao porque nao esta definido se a data e o fechamento do acordo (parcelamento encerrado) ou a assinatura do contrato [gap: agreements_closed_at] |
+| Pagamento_DataFechamento | defer |  |  |  |  |  | 1.497 de 1.572 preenchidos (2021 a 2026, todos datetime ISO). Decisao de 2026-10-27: nao vira agreements.closed_at. Cruzando com as parcelas de staging, 830 dos 1.497 valores sao ANTERIORES ao primeiro vencimento, 418 caem entre parcelas e 191 sao posteriores a ultima: o rotulo `fechamento` da origem e a data de formalizacao do acordo, nao o encerramento do parcelamento. Gravar isso em closed_at marcaria 1.391 acordos que ainda tem parcela aberta como encerrados. A coluna fica com a aplicacao (PATCH /api/v1/agreements/:id) e o valor segue no payload de staging |
 | Pagamento_SucumbenciaTotal | defer |  |  |  |  |  | agreement_attrs_not_modeled |
 | Pagamento_SucumbenciaResto | defer |  |  |  |  |  | agreement_attrs_not_modeled |
 | Pagamento_SucumbenciaTipo | defer |  |  |  |  |  | agreement_attrs_not_modeled |
@@ -1224,8 +1223,8 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 
 - Entidade canonica: installments
 - Tipo de linha: child
-- Observacoes: 15.535 parcelas de acordo. Origem confirmada de installments e payments (status `confirmed`, operador 25/09). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments/asaas_charges a parcela criada pela mesma linha de origem.
-- Colunas: 34 (map=17, ignore=13, defer=4, review=0, unmapped=0)
+- Observacoes: 15.535 parcelas de acordo. Origem confirmada de installments e payments (status `confirmed`, operador 25/09). 245 duplicidades de (acordo, parcela) e 236 parcelas repetidas dentro do mesmo acordo continuam bloqueando a carga. `links` liga payments a parcela criada pela mesma linha de origem. `asaas_charges` fica fora da carga desde 2026-10-27: a aba nao carrega o cliente Asaas e as cinco colunas obrigatorias da tabela nao tem origem (ver gap asaas_charges_history).
+- Colunas: 34 (map=13, ignore=13, defer=8, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
@@ -1254,11 +1253,11 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | Pagamento_Listagem_Tipo | defer |  |  |  |  |  | Pagamento Padrao em 14.923 linhas e Pagamento Resgate Judicial em 140 (472 vazios): payments nao tem tipo e payments.source guarda a origem tecnica (manual/Asaas), nao o tipo |
 | Pagamento_Extrato_ID | defer |  |  |  |  |  | billing_integration_not_modeled |
 | Pagamento_Categoria | ignore |  |  |  |  |  | empty_column |
-| Pagamento_Banco_Status | map | asaas_charges.status | code | value_map_ci | sim |  | 9 valores (15.535 linhas): vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1 (lixo). O vazio e o `z` caem no DEFAULT 'unknown' criado pela migration 0008 e saem como LOAD_VALUE_DEFAULTED; CARTAO ITAU entra como paid e o billing_type CREDIT_CARD fica registrado como decisao de operacao em docs/MIGRATION_WORKFLOW.md [valores: baixado->paid, pago automatico->paid, pagamento manual->paid, pago colegio->paid, cartao itau->paid, pendente->pending, atrasado->overdue] |
-| Pagamento_PagAsaas_ID | map | asaas_charges.external_id | text | trim |  |  | 6.369 distintos = unico na origem |
+| Pagamento_Banco_Status | defer |  |  |  |  |  | 9 rotulos em 15.535 linhas (vazio 4.799, BAIXADO 4.175, PAGO AUTOMATICO 3.250, ATRASADO 1.240, PENDENTE 1.127, PAGO COLEGIO 439, PAGAMENTO MANUAL 353, CARTAO ITAU 151, `z` 1). O mapa para asaas_charges.status sai junto com a entidade (ver gap asaas_charges_history): o rotulo do boleto nao muda o pagamento, que ja vem de payments |
+| Pagamento_PagAsaas_ID | defer |  |  |  |  |  | 6.369 ids distintos em 15.535 linhas. A cobranca do legado nao entra no canonico por falta de origem para asaas_charges.asaas_customer_id (NOT NULL) e para billing_type/environment/value/due_date; preencher com constante derivaria dado inexistente. O id permanece no staging e a integracao Asaas do backend reconcilia por external_id |
 | Pagamento_CliAsaas_ID | ignore |  |  |  |  |  | empty_column |
-| Pagamento_LinkPag | map | asaas_charges.invoice_url | url | trim |  |  |  |
-| Pagamento_CopiaeCola | map | asaas_charges.pix_qr_code | text | trim |  |  |  |
+| Pagamento_LinkPag | defer |  |  |  |  |  | link de pagamento gerado no Asaas antigo; expira junto com a cobranca que a integracao nova recria |
+| Pagamento_CopiaeCola | defer |  |  |  |  |  | Pix copia-e-cola do Asaas antigo; expira junto com a cobranca |
 | Pagamento_Whats | ignore |  |  |  |  |  | legacy_flag |
 | Pagamento_Email | ignore |  |  |  |  |  | legacy_flag |
 | Pagamento_BoletoCriado | ignore |  |  |  |  |  | legacy_flag |
@@ -1506,11 +1505,11 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 - Entidade canonica: users
 - Tipo de linha: entity-deferred
 - Observacoes: 28 usuarios internos. Nenhuma senha e migrada: USER_SENHA/USER_PASS sao credenciais comprometidas. Entrada canonica exige email novo e redefinicao de senha.
-- Colunas: 13 (map=0, ignore=3, defer=9, review=1, unmapped=0)
+- Colunas: 13 (map=0, ignore=3, defer=10, review=0, unmapped=0)
 
 | Coluna | Decisao | Destino | Tipo | Normalizacao | Obrig. | Ref | Detalhe |
 |---|---|---|---|---|---|---|---|
-| ID | review |  |  |  |  |  | users.legacy_* existe desde a 0010 (28 ids); a entrada continua bloqueada porque users.password_hash e NOT NULL e a senha do legado nao migra [gap: users_legacy_import] |
+| ID | defer |  |  |  |  |  | Decisao de 2026-10-27: os 28 usuarios internos nao entram pela migracao. users.password_hash e NOT NULL e a senha do legado (USER_SENHA/USER_PASS) nao pode ser reaproveitada, entao a carga exigiria senha sintetica e redefinicao em massa de todo mundo. A identidade nasce em auth:create-admin e users.legacy_* (0010) fica para rastreabilidade futura |
 | Title | ignore |  |  |  |  |  | denormalized_display_name |
 | USER_USUARIO | defer |  |  |  |  |  | 28 logins distintos; base para o email canonico |
 | USER_SENHA | ignore |  |  |  |  |  | secret_revoked |
@@ -1532,14 +1531,15 @@ Este relatorio nao grava nada no banco e nao cria registros canonicos.
 | `installments_description` | installments nao tem descricao/tipo do debito (Divida_Listagem.Tipo_de_debito, Obs) | 2 |
 | `agreements_source_resolution` | resolvido (decisao de 2026-09-25, registrada no dicionario em 2026-10-22): agreements.legacy_id vem de TBL_PAGAMENTO; TBL_DIVIDA e TBL_DIVIDA_LISTAGEM ficam fora do canonico ate existir modelo de inadimplencia (entidade debts/debt_items) | 11 |
 | `agreements_type` | agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO) | 2 |
-| `agreements_closed_at` | resolvido no schema pela migration 0010 (agreements.closed_at): a coluna existe e continua sem mapeamento porque a semantica do fechamento (acordo encerrado x contrato assinado) segue em revisao | 1 |
+| `agreements_closed_at` | resolvido no schema pela migration 0010 (agreements.closed_at), mas a coluna e da aplicacao e nao da migracao: em 2026-10-27 Pagamento_DataFechamento ficou em defer/no_canonical_destination porque 830 dos 1.497 valores sao anteriores ao primeiro vencimento (data de formalizacao, nao de encerramento) e gravar isso em closed_at marcaria acordo ativo como encerrado | 0 |
 | `schools_contact_address` | schools nao tem contato nem endereco; contacts e restrito a customers | 9 |
 | `students_contact` | resolvido no schema pelas migrations 0010 (student_contacts, espelho de contacts apontando para students) e 0011 (student_contacts.status) e mapeado desde a 0011: TBL_ENDTEL entra como `proposed` com type/value/is_primary/status, 41.117 das 47.562 linhas carregaveis (457 tem tipo e valor vazio e 5.988 nao tem tipo, valor nem status) | 14 |
 | `customers_address` | customers nao tem endereco estruturado | 7 |
 | `customers_document_type` | customers nao tem document_type (cpf/cnpj) exigido por CANONICAL_DATA_RULES.md | 1 |
 | `contacts_legacy_id` | resolvido pela migration 0009 (colunas legacy_* em contacts) e por scripts/backfill_legacy_provenance.py, que carimba os contatos ja gravados antes de a carga usar a chave legada | 0 |
 | `students_guardian_details` | resolvido no schema pela migration 0011 (guardians): RG, profissao e estado civil do responsavel entram em guardians.document_rg/occupation/marital_status como `proposed`, junto com o nome (Aluno.Responsavel_Financeiro) e o CPF (Aluno.CPFResponsavel) | 0 |
-| `users_legacy_import` | resolvido no schema pela migration 0010 (users.legacy_source/legacy_table/legacy_id + indice unico): a importacao continua presa a politica de credencial, porque users.password_hash e NOT NULL e a senha do legado nao migra | 1 |
+| `users_legacy_import` | resolvido pela decisao de 2026-10-27: os 28 usuarios do legado nao migram. users.legacy_* (0010) existe para rastreabilidade, mas a identidade nasce em auth:create-admin porque users.password_hash e NOT NULL e a senha do legado nao pode ser reaproveitada | 0 |
+| `asaas_charges_history` | decisao de 2026-10-27: as cobrancas Asaas do legado (6.369 external_id distintos em 15.535 parcelas) nao entram pela migracao. A carga exige asaas_customer_id (NOT NULL), billing_type, environment, value e due_date, e a aba de parcelas (TBL_PAGAMENTO_LISTAGEM) nao carrega o cliente Asaas: Pagamento_CliAsaas_ID e vazio nela e o vinculo so existe em TBL_PAGAMENTO.Pagamento_CliAsaas_ID (1.122 preenchidos). A fonte da verdade passa a ser a integracao Asaas do backend, que reconcilia por external_id (asaas_charges.external_id e UNIQUE); o valor financeiro ja esta em payments e installments | 0 |
 
 ### installments_description
 
@@ -1558,12 +1558,6 @@ Colunas: `TBL_DIVIDA.ID`, `TBL_DIVIDA.Divida.Aluno.ID`, `TBL_DIVIDA.Divida_Nome`
 agreements nao tem campo de tipo (JUDICIAL/EXTRAJUDICIAL/CEJUSC/PERSONALIZADO)
 
 Colunas: `TBL_PAGAMENTO.Pagamento.Tipo`, `TBL_PAGAMENTO_LISTAGEM.Pagamento_Lista.TipoAcordo`.
-
-### agreements_closed_at
-
-resolvido no schema pela migration 0010 (agreements.closed_at): a coluna existe e continua sem mapeamento porque a semantica do fechamento (acordo encerrado x contrato assinado) segue em revisao
-
-Colunas: `TBL_PAGAMENTO.Pagamento_DataFechamento`.
 
 ### schools_contact_address
 
@@ -1589,18 +1583,9 @@ customers nao tem document_type (cpf/cnpj) exigido por CANONICAL_DATA_RULES.md
 
 Colunas: `TBL_CLIENTE.CLIENTE_CNPJ`.
 
-### users_legacy_import
-
-resolvido no schema pela migration 0010 (users.legacy_source/legacy_table/legacy_id + indice unico): a importacao continua presa a politica de credencial, porque users.password_hash e NOT NULL e a senha do legado nao migra
-
-Colunas: `TBL_USER.ID`.
-
 ## Decisoes de politica pendentes
 
-| Codigo | Motivo | Ocorrencias | Abas | Exemplos |
-|---|---|---:|---|---|
-| `REVIEW_REQUIRED` | `pending_policy` | 1 | TBL_PAGAMENTO | `TBL_PAGAMENTO.Pagamento_DataFechamento` |
-| `REVIEW_REQUIRED` | `user_import_requires_credential_reset` | 1 | TBL_USER | `TBL_USER.ID` |
+Nenhum item pendente: o dicionario esta liberado para aprovacao do lote.
 
 ## Motivos registrados
 
@@ -1610,7 +1595,7 @@ Colunas: `TBL_USER.ID`.
 | defer | `agreement_attrs_not_modeled` | 7 | atributo de acordo/divida sem coluna canonica (tipo, sucumbencia, percentual, repasse) |
 | defer | `bank_registry_not_modeled` | 1 | cadastro de bancos/contas nao esta modelado nesta fase |
 | defer | `billing_email_templates_not_modeled` | 7 | modelos de e-mail de cobranca nao estao modelados nesta fase |
-| defer | `billing_integration_not_modeled` | 132 | conciliacao bancaria/extrato fica para fase posterior |
+| defer | `billing_integration_not_modeled` | 136 | conciliacao bancaria/extrato fica para fase posterior |
 | defer | `business_segment_not_modeled` | 2 | segmento/CNAE e dados de mercado nao estao modelados |
 | defer | `calendar_not_modeled` | 5 | calendario de feriados nao esta modelado nesta fase |
 | defer | `company_registry_not_modeled` | 13 | cadastro de empresas do grupo nao esta modelado nesta fase |
@@ -1622,14 +1607,14 @@ Colunas: `TBL_USER.ID`.
 | defer | `inflation_index_not_modeled` | 4 | indice de correcao monetaria (INPC) e necessario ao recalculo de dividas; fase posterior |
 | defer | `legal_fees_table_not_modeled` | 4 | tabela de custas juridicas nao esta modelada nesta fase |
 | defer | `legal_process_not_modeled` | 54 | processos juridicos, publicacoes e etapas ficam para fase posterior |
-| defer | `no_canonical_destination` | 97 | sem destino canonico nesta fase; o valor permanece no payload de staging |
+| defer | `no_canonical_destination` | 98 | sem destino canonico nesta fase; o valor permanece no payload de staging |
 | defer | `out_of_scope_operations` | 24 | operacao de escritorio (agenda, tarefas) fora do escopo desta fase |
 | defer | `payables_not_modeled` | 114 | contas a pagar, fornecedores e despesas nao entram no dominio canonico desta fase |
 | defer | `recalculation_log_not_modeled` | 5 | log de recalculo de dividas nao esta modelado nesta fase |
 | defer | `route_not_modeled` | 11 | roteirizacao de visitas nao esta modelada nesta fase |
 | defer | `school_config_not_modeled` | 4 | configuracao comercial da escola (tipo de acordo, contrato, origem) nao esta modelada |
 | defer | `school_fee_not_modeled` | 8 | tabela de taxas por escola/ano nao esta modelada nesta fase |
-| defer | `user_import_requires_credential_reset` | 30 | usuario do legado entra com email novo e senha redefinida; nunca importar credencial |
+| defer | `user_import_requires_credential_reset` | 31 | usuario do legado entra com email novo e senha redefinida; nunca importar credencial |
 | defer | `user_link_requires_review` | 5 | vinculo com usuario exige conciliacao; nunca por nome isolado |
 | ignore | `attachment_metadata` | 2 | referencia de anexo do Dataverse; arquivos nao migram nesta fase |
 | ignore | `computed_cache` | 18 | valor derivado/recalculavel a partir das tabelas canonicas |
@@ -1640,8 +1625,6 @@ Colunas: `TBL_USER.ID`.
 | ignore | `legacy_flag` | 7 | flag operacional legado sem equivalente canonico |
 | ignore | `secret_revoked` | 4 | segredo/credencial: nunca migrar e deve ser revogado na origem |
 | ignore | `staging_helper` | 5 | aba auxiliar de carga manual/planilha; nao representa entidade do dominio |
-| review | `pending_policy` | 1 | decisao de negocio pendente registrada na fase 2 |
-| review | `user_import_requires_credential_reset` | 1 | usuario do legado entra com email novo e senha redefinida; nunca importar credencial |
 
 ## Avisos (nao bloqueiam)
 

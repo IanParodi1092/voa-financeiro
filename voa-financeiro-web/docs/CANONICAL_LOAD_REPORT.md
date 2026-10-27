@@ -12,7 +12,7 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | Canonico | `localhost:5434/voa_staging` |
 | Topologia | staging e canonico no mesmo banco |
 | Entidades prontas | 10 |
-| Entidades bloqueadas | 1 |
+| Entidades bloqueadas | 0 |
 | Linhas legadas avaliadas | 176205 |
 | Linhas carregadas | 150018 |
 | Linhas novas | 0 |
@@ -26,7 +26,6 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | Tabela | Situacao | Motivo | Dependencias | Colunas mapeadas | Obrigatorias sem cobertura |
 |---|---|---|---|---:|---|
 | `agreements` | ready |  | customers, schools, students | 7 | nenhuma |
-| `asaas_charges` | blocked | required_columns_uncovered (asaas_customer_id, billing_type, due_date, environment, value) | installments | 5 | asaas_customer_id, billing_type, due_date, environment, value |
 | `asaas_customers` | ready |  | customers | 3 | nenhuma |
 | `contacts` | ready |  | customers | 4 | nenhuma |
 | `customers` | ready |  | - | 3 | nenhuma |
@@ -117,7 +116,7 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 
 | Tabela | Legadas | Carregadas | Novas | Reusadas | Atualizadas | Descartadas | Motivos de descarte |
 |---|---:|---:|---:|---:|---:|---:|---|
-| `agreements` | 1572 | 1505 | 0 | 1505 | 0 | 67 | LOAD_AGGREGATE_MISSING=63, LOAD_ROW_LINK_UNRESOLVED=4 |
+| `agreements` | 1572 | 1505 | 0 | 1505 | 1504 | 67 | LOAD_AGGREGATE_MISSING=63, LOAD_ROW_LINK_UNRESOLVED=4 |
 | `asaas_customers` | 1572 | 1120 | 0 | 1120 | 0 | 452 | LOAD_DUPLICATE_ROW=2, LOAD_REQUIRED_FIELD_EMPTY=446, LOAD_ROW_LINK_UNRESOLVED=4 |
 | `contacts` | 54782 | 46829 | 0 | 46829 | 0 | 7953 | LOAD_REFERENCE_UNRESOLVED=7648, LOAD_REQUIRED_FIELD_EMPTY=305 |
 | `customers` | 26268 | 26264 | 0 | 26264 | 0 | 4 | LOAD_REQUIRED_FIELD_EMPTY=4 |
@@ -175,7 +174,6 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 | Tabela | Antes | Depois |
 |---|---:|---:|
 | `agreements` | 1505 | 1505 |
-| `asaas_charges` | 0 | 0 |
 | `asaas_customers` | 1120 | 1120 |
 | `contacts` | 46829 | 46829 |
 | `customers` | 26264 | 26264 |
@@ -188,4 +186,4 @@ Gerado por `scripts/load_canonical_batch.py` a partir do dicionario
 
 ## Bloqueios e proximos passos
 
-- `asaas_charges`: required_columns_uncovered (asaas_customer_id, billing_type, due_date, environment, value)
+- Nenhuma entidade solicitada ficou bloqueada nesta rodada.

@@ -448,7 +448,9 @@ Quatro pontos de operacao:
 1. A `0011` entrou com `guardians` e `student_contacts` como `status: "proposed"` e o operador
    **confirmou as 10 colunas em 2026-10-27**, junto com `Pagamento_Nome` (classe A'). Com isso a
    rodada padrao passou a ser a rodada completa: `considered=176.205`, `loaded=150.018`,
-   `inserted=0`, `reused=150.018`, `exit 4` so pelo `asaas_charges`. Os numeros anteriores ficam como
+   `inserted=0`, `reused=150.018`; o `exit 4` que sobrava era o `asaas_charges`, resolvido em
+   2026-10-27 ao tirar a entidade do plano de carga (ver "Decisao sobre cobrancas do legado"), entao
+   hoje a rodada sai `exit 0`. Os numeros anteriores ficam como
    referencia: `121.991`/`104.709` com `--allow-proposed agreements` e `89.349`/`80.929` sem flag
    nenhuma (quando `agreements` bloqueado derrubava `installments` e `payments`).
 2. A chave legada do guardiao e a da **linha do aluno** (`legacy_id = TBL_ALUNO.ID`,
@@ -467,23 +469,37 @@ Quatro pontos de operacao:
 Validacao: `Applied migration 0011_guardians_and_student_contact_status.sql` no banco existente
 (segunda rodada sem nada a aplicar), colunas/FK/indices conferidos no `information_schema` e
 `pg_indexes`, aplicacao do zero num banco vazio (os `11` arquivos em ordem, sem erro), suite Python
-com `215` testes e dicionario em `50 map`, `79 ignore`, `725 defer`, `2 review`, `0` problema
-estrutural e `0` divergencia de staging; portao em `exit 2` com `2 REVIEW_REQUIRED` e **zero**
-`MAPPING_NOT_CONFIRMED`. Carga confirmada em 2026-10-27: `6.347` guardioes e `38.962` contatos de
-aluno na rodada padrao (sem flag), `inserted=0`/`reused=150.018` na segunda passada.
+com `215` testes e dicionario em `46 map`, `79 ignore`, `731 defer`, `0 review`, `0` problema
+estrutural e `0` divergencia de staging; portao em **`exit 0`** (sem `REVIEW_REQUIRED` e sem
+`MAPPING_NOT_CONFIRMED`). Carga confirmada em 2026-10-27: `6.347` guardioes e `38.962` contatos de
+aluno na rodada padrao (sem flag), `inserted=0`/`reused=150.018` na segunda passada e
+`--commit --enrich-reused` materializando `agreements.reference` em `1.504` das `1.505` linhas.
 
-### Decisao de `billing_type` e `environment` das cobrancas
+### Decisao sobre cobrancas do legado: `asaas_charges` fica fora da carga (2026-10-27)
 
-- `asaas_customers.environment` e `asaas_charges.environment` ficam em `production` (decisao do
-  operador, ja registrada na regra `const: "production"` de
-  `Pagamento_CliAsaas_ID -> asaas_customers.environment`);
-- `asaas_charges.billing_type` fica em **`BOLETO`**: toda cobranca do legado nasce de link/copia e
-  cola de boleto (`Pagamento_LinkPag`, `Pagamento_CopiaeCola`), e o QR Code PIX do Asaas e atributo
-  **do boleto**, nao uma segunda cobranca (por isso nao ha `PIX` solto nas linhas com `PagAsaas_ID`);
-- a excecao conhecida sao as 151 linhas com `Pagamento_Banco_Status = 'CARTAO ITAU'`. O dicionario
-  nao expressa "valor de uma coluna depende de outra" (as regras sao por coluna), entao fica
-  registrado como decisao de operacao: ou todas entram como `BOLETO` (recomendado, para nao
-  inventar historico de cobranca) ou a carga ganha um passo proprio para essas 151 linhas.
+O bloco anterior (`billing_type = BOLETO`, `environment = production`) descrevia como carregar a
+cobranca do legado. A medicao de 2026-10-27 mostrou que a carga **nao consegue** ser honesta: a aba
+de parcelas (`TBL_PAGAMENTO_LISTAGEM`, origem de `installments`/`payments`) nao carrega o cliente
+Asaas - `Pagamento_CliAsaas_ID` e **vazio** nela e o vinculo existe so em
+`TBL_PAGAMENTO.Pagamento_CliAsaas_ID` (1.122 preenchidos). Como `asaas_charges.asaas_customer_id` e
+`NOT NULL` e a tabela tambem exige `billing_type`, `environment`, `value` e `due_date`, qualquer
+carga exigiria constante inventada em cinco colunas.
+
+Decisao:
+
+- as quatro colunas (`Pagamento_PagAsaas_ID`, `Pagamento_LinkPag`, `Pagamento_CopiaeCola`,
+  `Pagamento_Banco_Status`) ficam `defer: billing_integration_not_modeled`, o `link`
+  `asaas_charges.installment_id -> row:installments` foi removido e a entidade sai do plano de carga
+  (era ela, e so ela, o `exit 4` da rodada padrao);
+- o valor financeiro do legado continua garantido por `installments`/`payments` (valor, vencimento,
+  data e status de pagamento, retencao);
+- `asaas_charges` passa a ser populada pela integracao Asaas do backend, reconciliando por
+  `external_id` (coluna `UNIQUE`); `environment`/`billing_type` passam a vir do payload do provedor,
+  nao de uma decisao do importador. A excecao das 151 linhas `CARTAO ITAU` deixa de existir como
+  problema de carga: na integracao nova o `billing_type` e o da cobranca consultada;
+- `asaas_customers` continua carregando de `TBL_PAGAMENTO` (`Pagamento_CliAsaas_ID ->
+  asaas_customers.external_id`, `const: production`), porque ali o dado existe.
+
 
 ## Incidente de disco no staging de 2026-09-25 21:33 (Supabase em somente-leitura)
 

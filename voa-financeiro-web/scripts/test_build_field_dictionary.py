@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_field_dictionary import (  # noqa: E402
     DEFAULT_DICTIONARY,
     DEFAULT_WORKBOOK,
+    DEFER,
     IGNORE,
     MAP,
     REVIEW,
@@ -386,10 +387,23 @@ class RealDictionaryTests(unittest.TestCase):
         self.assertEqual(name_words("BANCO_APIKEY") & SECRET_WORDS, {"apikey"})
         self.assertEqual(name_words("Pagamento_Lista.MesAnoProgramacaoRepasse") & SECRET_WORDS, set())
 
-    def test_open_decisions_stay_blocked(self) -> None:
-        reasons = {item.get("reason") for item in self.validation["policy"]}
-        self.assertIn("pending_policy", reasons)
-        self.assertIn("user_import_requires_credential_reset", reasons)
+    def test_no_open_decision_is_left(self) -> None:
+        """As tres decisoes de produto de 2026-10-27 fecharam o portao de politica.
+
+        `Pagamento_DataFechamento` e `TBL_USER.ID` sairam de `review` e as quatro colunas de
+        cobranca Asaas sairam de `map`: o portao `approved` nao tem mais `REVIEW_REQUIRED` nem
+        `MAPPING_NOT_CONFIRMED`, entao `exit 0` deixou de depender de aprovacao avulsa.
+        """
+        self.assertEqual(self.validation["policy"], [])
+        decisions = {
+            (sheet, column["column"]): column["decision"]
+            for sheet, report in self.resolved.items()
+            for column in report["columns"]
+        }
+        self.assertEqual(decisions[("TBL_PAGAMENTO", "Pagamento_DataFechamento")], DEFER)
+        self.assertEqual(decisions[("TBL_USER", "ID")], DEFER)
+        self.assertEqual(decisions[("TBL_PAGAMENTO_LISTAGEM", "Pagamento_PagAsaas_ID")], DEFER)
+        self.assertEqual(decisions[("TBL_PAGAMENTO_LISTAGEM", "Pagamento_Banco_Status")], DEFER)
 
     def test_class_c_reopens_with_guardians(self) -> None:
         """A classe C saiu do `review` quando `guardians` nasceu na migration 0011.
