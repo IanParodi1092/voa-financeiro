@@ -42,6 +42,10 @@ Tabela canonica: `schools`.
 - Regra de duplicidade: bloquear mesmo CNPJ; sinalizar mesmo `name_normalized` para revisao.
 - O nome exibido pode mudar sem mudar o UUID.
 - Uma escola possui muitos alunos, acordos, parcelas, pagamentos e configuracoes de retencao.
+- `retention_enabled`, `retention_target_amount` e `retention_percentage` (`0015`) descrevem a regra de
+  retencao da escola: o interruptor, a meta total e a fracao retida (`numeric(5, 4)`, `NULL` = sem
+  percentual). O percentual e a fonte que o consumidor de `asaas_events` usa para lancar
+  `retention_ledger` (`docs/ASAAS_EVENT_RULES.md`, secao 5) e e editavel por `PATCH /api/v1/schools/:id`.
 
 O nome nao deve ser a unica chave tecnica: escolas podem ter nomes semelhantes. O CNPJ e a revisao assistida de nomes formam a identidade de migracao.
 

@@ -23,7 +23,11 @@ const customerSchema = z.object({
 const schoolSchema = z.object({
   legalName: z.string().trim().min(2).max(200),
   tradeName: z.string().trim().max(200).optional(),
-  documentNumber: z.string().trim().max(30).optional()
+  documentNumber: z.string().trim().max(30).optional(),
+  /** Interruptor da retencao; a escola nasce sem reter (`false`, default da `0002`). */
+  retentionEnabled: z.boolean().optional(),
+  /** Fracao retida (0.15 = 15%); `NULL`/ausente = sem percentual (`docs/ASAAS_EVENT_RULES.md`, secao 5). */
+  retentionPercentage: z.number().min(0).max(1).optional()
 });
 
 const contactSchema = z.object({
@@ -83,7 +87,9 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: RouteDeps): vo
     const query = request.query as { search?: string; limit?: string };
     const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 100);
     const search = query.search?.trim() ?? '';
-    const result = await pool.query(`SELECT id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"
+    const result = await pool.query(`SELECT id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status,
+      retention_enabled AS "retentionEnabled", retention_percentage AS "retentionPercentage",
+      created_at AS "createdAt", updated_at AS "updatedAt"
       FROM schools WHERE deleted_at IS NULL AND ($1 = '' OR legal_name ILIKE $2 OR trade_name ILIKE $2 OR document_number ILIKE $2)
       ORDER BY legal_name LIMIT $3`, [search, `%${search}%`, limit]);
     return { items: result.rows, limit, search };
@@ -93,11 +99,13 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: RouteDeps): vo
     const parsed = schoolSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid school data', correlationId: request.id });
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
-    const { legalName, tradeName, documentNumber } = parsed.data;
-    const result = await pool.query(`INSERT INTO schools (legal_name, trade_name, document_number)
-      VALUES ($1, $2, $3)
-      RETURNING id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status, created_at AS "createdAt", updated_at AS "updatedAt"`,
-      [legalName, tradeName ?? null, documentNumber ?? null]);
+    const { legalName, tradeName, documentNumber, retentionEnabled, retentionPercentage } = parsed.data;
+    const result = await pool.query(`INSERT INTO schools (legal_name, trade_name, document_number, retention_enabled, retention_percentage)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status,
+        retention_enabled AS "retentionEnabled", retention_percentage AS "retentionPercentage",
+        created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [legalName, tradeName ?? null, documentNumber ?? null, retentionEnabled ?? false, retentionPercentage ?? null]);
     await recordAudit(pool, request.log, request.id, {
       action: 'school.created',
       actorId: actorIdOf(request),

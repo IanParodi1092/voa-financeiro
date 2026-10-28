@@ -32,6 +32,12 @@ export interface AsaasEventSettings {
   leaseTimeoutMs: number;
   /** Teto de tentativas (`WEBHOOK_RETRY_LIMIT`). */
   maxAttempts: number;
+  /**
+   * Liga o lancamento em `retention_ledger` (`RETENTION_LEDGER_ENABLED`, default `false`). Desligado, o
+   * consumidor aplica estado e `payments` e nao toca em retencao - e o estado em que o recurso nasce,
+   * porque depende de as escolas terem percentual configurado.
+   */
+  retentionLedgerEnabled: boolean;
 }
 
 export interface AsaasEventWorkerDeps {
@@ -89,38 +95,150 @@ interface ChargeRow {
   installmentId: string | null;
   installmentStatus: string | null;
   originalAmount: string | null;
+  /** Escola dona da parcela (`installments -> agreements -> schools`), quando a cadeia existe. */
+  schoolId: string | null;
+  retentionEnabled: boolean | null;
+  /** `numeric(5, 4)` chega como string do driver; `null` = escola sem percentual (0015). */
+  retentionPercentage: string | null;
 }
 
 /** Localiza a cobranca local pela `external_id` do provedor e a parcela ligada a ela. */
 async function findCharge(pool: Pool, externalChargeId: string): Promise<ChargeRow | undefined> {
   const result = await pool.query<ChargeRow>(
     `SELECT ac.id AS "chargeId", ac.installment_id AS "installmentId",
-            i.status AS "installmentStatus", i.original_amount AS "originalAmount"
+            i.status AS "installmentStatus", i.original_amount AS "originalAmount",
+            a.school_id AS "schoolId",
+            s.retention_enabled AS "retentionEnabled", s.retention_percentage AS "retentionPercentage"
        FROM asaas_charges ac
        LEFT JOIN installments i ON i.id = ac.installment_id
+       LEFT JOIN agreements a ON a.id = i.agreement_id
+       LEFT JOIN schools s ON s.id = a.school_id
       WHERE ac.external_id = $1`,
     [externalChargeId]
   );
   return result.rows[0];
 }
 
+export interface ApplyOutcome {
+  /** Motivo quando o lancamento em `payments` nao pode ser gravado (`CHECK amount > 0`). */
+  paymentSkipped: string | null;
+  /** Motivo quando a retencao nao foi lancada (secao 5, regra 4). `null` e o caso normal. */
+  retentionSkipped: string | null;
+}
+
+/** Estados de pagamento que confirmam dinheiro: os unicos que lancam retencao (secao 5, regra 1). */
+const MONEY_IN_PAYMENT_STATUSES: readonly string[] = ['confirmed', 'paid'];
+
 /**
- * Aplica o estado na transacao curta: cobranca, parcela e lancamento fecham juntos.
+ * Lancamento no `retention_ledger` (secao 5 de `docs/ASAAS_EVENT_RULES.md`).
+ *
+ * O percentual vem da **escola** (`schools.retention_percentage`, `0015`), nao do payload: um pagamento
+ * novo vindo do Asaas nao passa pela planilha que alimenta `payments.retention_percentage`. Escola sem
+ * `retention_enabled` ou sem percentual **nao inventa numero** - o pagamento vira `not_applicable`, que e
+ * a regra 4.
+ *
+ * Idempotencia em duas camadas: `NOT EXISTS` mantem o codigo correto mesmo num banco sem a
+ * `retention_ledger_payment_entry_unique` da `0014`, e o `ON CONFLICT DO NOTHING` (sem alvo, entao sem
+ * depender da inferencia do indice parcial) absorve a corrida entre dois processos. Todos os valores sao
+ * **absolutos**, nunca incrementais: reaplicar o evento reescreve o mesmo numero.
+ */
+async function applyRetention(
+  client: PoolClient,
+  row: ChargeRow,
+  changes: { chargeStatus: string | null; installmentStatus: string; paymentStatus: string | null },
+  paymentId: string,
+  amount: number,
+  settings: AsaasEventSettings
+): Promise<string | null> {
+  if (!settings.retentionLedgerEnabled) return null;
+  const status = changes.paymentStatus;
+  const moneyIn = status !== null && MONEY_IN_PAYMENT_STATUSES.includes(status);
+  const refunded = status === 'refunded';
+  if (!moneyIn && !refunded) return null;
+  if (row.schoolId === null) return 'parcela sem escola (agreement sem school_id)';
+
+  if (refunded) {
+    // Regra 3: o estorno depois do lancamento vira `reversal` com o mesmo valor retido.
+    await client.query(
+      `INSERT INTO retention_ledger (school_id, installment_id, payment_id, amount, entry_type)
+       SELECT school_id, installment_id, payment_id, amount, 'reversal'
+         FROM retention_ledger
+        WHERE payment_id = $1 AND entry_type = 'retention'
+          AND NOT EXISTS (SELECT 1 FROM retention_ledger WHERE payment_id = $1 AND entry_type = 'reversal')
+       ON CONFLICT DO NOTHING`,
+      [paymentId]
+    );
+    const reverted = await client.query(
+      `UPDATE payments SET retained_amount = 0, updated_at = now() WHERE id = $1 AND retained_amount > 0`,
+      [paymentId]
+    );
+    if (reverted.rowCount !== 0) return null;
+    // Nada a zerar: ou o estorno ja foi registrado, ou nunca houve retencao lancada. O ledger distingue.
+    const posted = await client.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM retention_ledger WHERE payment_id = $1 AND entry_type = 'retention'`,
+      [paymentId]
+    );
+    return (posted.rows[0]?.count ?? 0) === 0 ? 'estorno sem retencao lancada' : null;
+  }
+
+  const percentage = row.retentionPercentage === null ? null : Number(row.retentionPercentage);
+  if (row.retentionEnabled !== true || percentage === null || !Number.isFinite(percentage) || percentage <= 0) {
+    return notApplicable(client, paymentId, row, percentage);
+  }
+
+  const retained = Math.round(amount * percentage * 100) / 100;
+  if (retained <= 0) {
+    await notApplicable(client, paymentId, row, percentage);
+    return `retencao calculada igual a zero (${percentage})`;
+  }
+
+  await client.query(
+    `INSERT INTO retention_ledger (school_id, installment_id, payment_id, amount, entry_type)
+     SELECT $1, $2, $3, $4, 'retention'
+      WHERE NOT EXISTS (SELECT 1 FROM retention_ledger WHERE payment_id = $3 AND entry_type = 'retention')
+     ON CONFLICT DO NOTHING`,
+    [row.schoolId, row.installmentId, paymentId, retained]
+  );
+  // `retained_amount` e o liquido retido (a regra 3 zera no `reversal`); `retention_status` fica como
+  // esta, porque `pending_approval`/`approved`/`released` e ciclo de aprovacao humana
+  // (`PATCH /api/v1/payments/:id`).
+  await client.query(
+    `UPDATE payments SET retained_amount = $2, retention_percentage = $3, updated_at = now() WHERE id = $1`,
+    [paymentId, retained, percentage]
+  );
+  return null;
+}
+
+/** Regra 4: escola sem regra nao tem lancamento, e o pagamento diz por que. */
+async function notApplicable(client: PoolClient, paymentId: string, row: ChargeRow, percentage: number | null): Promise<string | null> {
+  await client.query(
+    `UPDATE payments SET retention_status = 'not_applicable', updated_at = now() WHERE id = $1 AND retention_status IS NULL`,
+    [paymentId]
+  );
+  if (row.retentionEnabled !== true) return 'escola sem retencao habilitada';
+  return percentage === null
+    ? 'escola sem percentual de retencao'
+    : `percentual sem retencao (${String(row.retentionPercentage)})`;
+}
+
+/**
+ * Aplica o estado na transacao curta: cobranca, parcela, lancamento e retencao fecham juntos.
  *
  * `ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL` e a chave **que ja existe** desde a
  * `0004` (`payments_external_idx`): reaplicar o evento atualiza o mesmo lancamento em vez de criar um
  * segundo. Nao ha indice novo em `0014` por isso - `(source, external_id)` cobre `asaas` e `manual`.
  *
- * Devolve o motivo quando o lancamento em `payments` nao pode ser gravado (`amount > 0` e `CHECK` da
- * tabela). O estado da parcela vale mais que o lancamento: ele e aplicado de qualquer forma e o
- * motivo vai para o log e para o `audit_logs`.
+ * Devolve os motivos quando o lancamento em `payments` nao pode ser gravado (`amount > 0` e `CHECK` da
+ * tabela) e quando a retencao nao se aplica. O estado da parcela vale mais que o lancamento: ele e
+ * aplicado de qualquer forma e o motivo vai para o log e para o `audit_logs`.
  */
 async function applyEvent(
   client: PoolClient,
   row: ChargeRow,
   changes: { chargeStatus: string | null; installmentStatus: string; paymentStatus: string | null },
-  payment: PaymentPayload
-): Promise<string | null> {
+  payment: PaymentPayload,
+  settings: AsaasEventSettings
+): Promise<ApplyOutcome> {
   await client.query(`UPDATE asaas_charges SET status = COALESCE($2, status), updated_at = now() WHERE id = $1`, [
     row.chargeId,
     changes.chargeStatus
@@ -133,22 +251,30 @@ async function applyEvent(
     ]);
   }
 
-  if (changes.paymentStatus === null || row.installmentId === null) return null;
+  if (changes.paymentStatus === null || row.installmentId === null) {
+    return { paymentSkipped: null, retentionSkipped: null };
+  }
 
   const amount = payment.value ?? Number(row.originalAmount ?? 0);
   if (!Number.isFinite(amount) || amount <= 0) {
-    return `valor ausente ou zero no payload (${String(payment.value)})`;
+    return {
+      paymentSkipped: `valor ausente ou zero no payload (${String(payment.value)})`,
+      retentionSkipped: 'sem lancamento em payments'
+    };
   }
 
-  await client.query(
+  const upserted = await client.query<{ id: string }>(
     `INSERT INTO payments (installment_id, amount, paid_at, status, source, external_id)
      VALUES ($1, $2, $3, $4, 'asaas', $5)
      ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
      DO UPDATE SET amount = EXCLUDED.amount, status = EXCLUDED.status,
-                   paid_at = COALESCE(EXCLUDED.paid_at, payments.paid_at), updated_at = now()`,
+                   paid_at = COALESCE(EXCLUDED.paid_at, payments.paid_at), updated_at = now()
+     RETURNING id`,
     [row.installmentId, amount, paidAtOf(payment) ?? new Date(), changes.paymentStatus, payment.id]
   );
-  return null;
+  const paymentId = String(upserted.rows[0]?.id ?? '');
+  const retentionSkipped = await applyRetention(client, row, changes, paymentId, amount, settings);
+  return { paymentSkipped: null, retentionSkipped };
 }
 
 async function processEvent(
@@ -204,14 +330,15 @@ async function processEvent(
     }
 
     const client = await pool.connect();
-    let paymentSkipped: string | null = null;
+    let outcome: ApplyOutcome = { paymentSkipped: null, retentionSkipped: null };
     try {
       await client.query('BEGIN');
-      paymentSkipped = await applyEvent(
+      outcome = await applyEvent(
         client,
         charge,
         { chargeStatus, installmentStatus: transition.to, paymentStatus: transition.paymentStatus },
-        payment
+        payment,
+        settings
       );
       await client.query('COMMIT');
     } catch (error) {
@@ -223,8 +350,11 @@ async function processEvent(
 
     await markAsaasEventProcessed(pool, message.id);
     tally.applied += 1;
-    if (paymentSkipped !== null) {
-      logger.warn({ ...baseLog, reason: paymentSkipped, externalChargeId }, 'asaas.event.payment_skipped');
+    if (outcome.paymentSkipped !== null) {
+      logger.warn({ ...baseLog, reason: outcome.paymentSkipped, externalChargeId }, 'asaas.event.payment_skipped');
+    }
+    if (outcome.retentionSkipped !== null) {
+      logger.debug({ ...baseLog, reason: outcome.retentionSkipped, externalChargeId }, 'asaas.event.retention_skipped');
     }
 
     const changedInstallment = transition.to !== transition.from;
@@ -239,7 +369,8 @@ async function processEvent(
         from: transition.from,
         to: transition.to,
         paymentStatus: transition.paymentStatus,
-        ...(paymentSkipped === null ? {} : { paymentSkipped })
+        ...(outcome.paymentSkipped === null ? {} : { paymentSkipped: outcome.paymentSkipped }),
+        ...(outcome.retentionSkipped === null ? {} : { retentionSkipped: outcome.retentionSkipped })
       }
     });
     logger.info(

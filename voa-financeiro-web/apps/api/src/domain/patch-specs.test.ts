@@ -95,6 +95,19 @@ describe('especificacoes de PATCH', () => {
     }
   });
 
+  it('valida o percentual de retencao da escola', () => {
+    const valid = patchSpecs.schools.schema.safeParse({ retentionEnabled: true, retentionPercentage: 0.15 });
+    expect(valid.success && valid.data).toEqual({ retentionEnabled: true, retentionPercentage: 0.15 });
+
+    const cleared = patchSpecs.schools.schema.safeParse({ retentionPercentage: null });
+    expect(cleared.success && cleared.data).toEqual({ retentionPercentage: null });
+
+    for (const retentionPercentage of [1.5, -0.1, '0.15']) {
+      expect({ retentionPercentage, accepted: patchSpecs.schools.schema.safeParse({ retentionPercentage }).success })
+        .toEqual({ retentionPercentage, accepted: false });
+    }
+  });
+
   it('recusa texto vazio e nome com um caractere', () => {
     expect(patchSpecs.schools.schema.safeParse({ legalName: 'A' }).success).toBe(false);
     expect(patchSpecs.schools.schema.safeParse({ tradeName: '   ' }).success).toBe(false);

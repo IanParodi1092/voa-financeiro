@@ -59,7 +59,8 @@ const asaasEvents = startAsaasEventsWorker({
   settings: {
     batchSize: config.ASAAS_EVENT_BATCH_SIZE,
     leaseTimeoutMs: config.ASAAS_EVENT_LEASE_TIMEOUT_MS,
-    maxAttempts: config.WEBHOOK_RETRY_LIMIT
+    maxAttempts: config.WEBHOOK_RETRY_LIMIT,
+    retentionLedgerEnabled: config.RETENTION_LEDGER_ENABLED
   }
 });
 asaasEventsWaker.wake = () => asaasEvents.wake();

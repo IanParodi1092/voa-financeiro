@@ -43,7 +43,13 @@ const environmentSchema = z.object({
   ASAAS_EVENTS_WORKER_ENABLED: booleanish(true),
   ASAAS_EVENT_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(10),
   /** Lease do evento: `last_attempt_at` mais velho que isto pode ser pego de novo. */
-  ASAAS_EVENT_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000)
+  ASAAS_EVENT_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  /**
+   * Lancamento em `retention_ledger` no evento que confirma dinheiro (`docs/ASAAS_EVENT_RULES.md`,
+   * secao 5). Desligado por default: o percentual vem de `schools.retention_percentage` (0015) e a
+   * chave so vira depois de as escolas estarem configuradas.
+   */
+  RETENTION_LEDGER_ENABLED: booleanish(false)
 });
 
 export interface RefreshCookieConfig {

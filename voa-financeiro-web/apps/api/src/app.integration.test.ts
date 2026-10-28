@@ -368,6 +368,54 @@ describeWithDatabase('integracao: autenticacao, rotacao de refresh, RBAC e audit
       expect(missing.statusCode).toBe(404);
       expect(missing.json()).toMatchObject({ code: 'NOT_FOUND' });
     });
+    it('grava e limpa o percentual de retencao da escola', async () => {
+      const headers = await adminHeaders();
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/schools',
+        headers,
+        payload: { legalName: `Colegio Retencao ${randomUUID().slice(0, 6)}` }
+      });
+      expect(created.statusCode).toBe(201);
+      const school = created.json() as { id: string; retentionEnabled: boolean; retentionPercentage: string | null };
+      expect(school).toMatchObject({ retentionEnabled: false, retentionPercentage: null });
+
+      const patched = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/schools/${school.id}`,
+        headers,
+        payload: { retentionEnabled: true, retentionPercentage: 0.15 }
+      });
+      expect(patched.statusCode).toBe(200);
+      expect(patched.json()).toMatchObject({ retentionEnabled: true });
+      expect(Number((patched.json() as { retentionPercentage: string }).retentionPercentage)).toBe(0.15);
+
+      const stored = await pool.query<{ percentage: string | null }>(
+        'SELECT retention_percentage AS percentage FROM schools WHERE id = $1',
+        [school.id]
+      );
+      expect(Number(stored.rows[0]?.percentage)).toBe(0.15);
+
+      // Fora de 0..1 o CHECK da 0015 nao e a primeira barreira: o schema responde 400.
+      const invalid = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/schools/${school.id}`,
+        headers,
+        payload: { retentionPercentage: 1.5 }
+      });
+      expect(invalid.statusCode).toBe(400);
+
+      const cleared = await app.inject({
+        method: 'PATCH',
+        url: `/api/v1/schools/${school.id}`,
+        headers,
+        payload: { retentionPercentage: null }
+      });
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json()).toMatchObject({ retentionPercentage: null });
+    });
+
+
 
     it('nao atualiza linha apagada logicamente', async () => {
       const headers = await adminHeaders();

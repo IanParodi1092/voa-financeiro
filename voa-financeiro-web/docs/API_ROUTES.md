@@ -20,7 +20,9 @@ O codigo da API separa as rotas por contexto, um arquivo por grupo: `routes/ops.
 - `GET/POST /api/v1/agreements`, `GET/POST /api/v1/installments`, `GET/POST /api/v1/payments`
 - `POST /api/v1/customers/:id/asaas` e `POST /api/v1/installments/:id/charge` (`finance:write`) - os dois
   produtores da fila de saida: sincronizar o cliente e gerar a cobranca (ver a secao "Fila de saida")
-- `GET /api/v1/schools/:schoolId/retention`
+- `GET /api/v1/schools/:schoolId/retention` - `retentionEnabled`, `retentionPercentage`, `targetAmount`,
+  `retainedAmount` (**liquido**: `retention` soma, `release` e `reversal` subtraem), e o detalhe
+  `retentionAmount` / `releasedAmount` / `reversedAmount`
 - `PATCH /api/v1/schools|customers|students|guardians|student-contacts/:id` (`catalog:write`) e
   `PATCH /api/v1/agreements|installments|payments/:id` (`finance:write`)
 - `POST /api/v1/migrations/batches` e `GET /api/v1/migrations/batches[/:id]` (`migration:write` / `read`)
@@ -57,7 +59,7 @@ Campos por entidade:
 
 | Entidade | Campos |
 |---|---|
-| `schools` | `legalName`, `tradeName`, `documentNumber`, `status`, `retentionEnabled`, `retentionTargetAmount` |
+| `schools` | `legalName`, `tradeName`, `documentNumber`, `status`, `retentionEnabled`, `retentionTargetAmount`, `retentionPercentage` |
 | `customers` | `fullName`, `documentNumber`, `email`, `phone`, `status` |
 | `students` | `schoolId`, `customerId`, `fullName`, `documentNumber`, `enrollmentNumber`, `status` |
 | `guardians` | `customerId`, `fullName`, `documentNumber`, `documentRg`, `maritalStatus`, `occupation`, `isFinancial`, `isVerified` |
@@ -66,9 +68,12 @@ Campos por entidade:
 | `installments` | `dueDate`, `originalAmount`, `status` |
 | `payments` | `status`, `retainedAmount`, `releasedAmount`, `retentionStatus`, `retentionPercentage`, `retentionApprovedAt`, `retentionScheduledMonth`, `retentionReleasedAt` |
 
-`retentionPercentage` e uma **fracao** (`0.25` = 25%), no formato `numeric(5, 4)` da migration
-`0008`; `retentionScheduledMonth` aceita apenas `AAAA-MM` e `retentionStatus` aceita
-`pending_approval`, `approved`, `released`, `not_applicable` ou `direct_payment`.
+`retentionPercentage` e uma **fracao** (`0.25` = 25%), no formato `numeric(5, 4)`: em `payments` desde a
+migration `0008`, em `schools` desde a `0015`. O da **escola** e a fonte que o consumidor de
+`asaas_events` usa para lancar retencao (secao 5 de `docs/ASAAS_EVENT_RULES.md`); `NULL` significa
+"escola sem percentual" e `retentionEnabled` e o interruptor. `retentionScheduledMonth` aceita apenas
+`AAAA-MM` e `retentionStatus` aceita `pending_approval`, `approved`, `released`, `not_applicable` ou
+`direct_payment`.
 `GET /api/v1/payments` devolve as mesmas colunas `retention*`, entao a tela nao precisa de uma
 segunda leitura para acompanhar o repasse.
 
@@ -274,8 +279,10 @@ gravado com `ON CONFLICT (source, external_id)`, e um `eventType` cujo estado de
 vira `stale` (no-op auditado) em vez de reabrir uma parcela estornada. `attempts >=
 WEBHOOK_RETRY_LIMIT` carimba `failed_at`; sem `ASAAS_EVENTS_WORKER_ENABLED=true` o webhook continua
 gravando e a fila so cresce, o que aparece no `oldestPendingAgeSeconds`. O lancamento em
-`retention_ledger` fica atras de `RETENTION_LEDGER_ENABLED` (default `false`) ate a fonte do
-percentual ser decidida.
+`retention_ledger` fica atras de `RETENTION_LEDGER_ENABLED` (**default `false`**): ligado, o evento que
+confirma dinheiro lanca `retention` pelo `schools.retentionPercentage` da escola (`PATCH
+/api/v1/schools/:id`) e o estorno lanca `reversal`; escola sem percentual ou com `retentionEnabled =
+false` vira `payments.retentionStatus = 'not_applicable'`, sem lancamento.
 
 ## Permissoes (RBAC)
 

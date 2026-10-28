@@ -35,6 +35,7 @@ export const patchSpecs = {
     auditAction: 'school.updated',
     returning: `id, legal_name AS "legalName", trade_name AS "tradeName", document_number AS "documentNumber", status,
       retention_enabled AS "retentionEnabled", retention_target_amount AS "retentionTargetAmount",
+      retention_percentage AS "retentionPercentage",
       created_at AS "createdAt", updated_at AS "updatedAt"`,
     schema: z.object({
       legalName: text(200).min(2),
@@ -42,7 +43,13 @@ export const patchSpecs = {
       documentNumber: nullableText(30),
       status,
       retentionEnabled: z.boolean(),
-      retentionTargetAmount: z.number().nonnegative().nullable()
+      retentionTargetAmount: z.number().nonnegative().nullable(),
+      /**
+       * Fracao retida pela escola (0.15 = 15%), `numeric(5, 4)` da 0015. `null` limpa o percentual e a
+       * escola volta a nao reter nada; e a fonte que o consumidor de `asaas_events` consulta
+       * (`docs/ASAAS_EVENT_RULES.md`, secao 5).
+       */
+      retentionPercentage: z.number().min(0).max(1).nullable()
     }).partial().strict(),
     columns: {
       legalName: 'legal_name',
@@ -50,7 +57,8 @@ export const patchSpecs = {
       documentNumber: 'document_number',
       status: 'status',
       retentionEnabled: 'retention_enabled',
-      retentionTargetAmount: 'retention_target_amount'
+      retentionTargetAmount: 'retention_target_amount',
+      retentionPercentage: 'retention_percentage'
     }
   },
   customers: {

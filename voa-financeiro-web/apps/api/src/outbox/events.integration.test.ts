@@ -24,9 +24,11 @@ const migrationsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..
 const schemaName = `asaas_ev_it_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 const PASSWORD = 'senha-de-teste-123456';
 
-const SETTINGS: AsaasEventSettings = { batchSize: 10, leaseTimeoutMs: 300_000, maxAttempts: 3 };
+const SETTINGS: AsaasEventSettings = { batchSize: 10, leaseTimeoutMs: 300_000, maxAttempts: 3, retentionLedgerEnabled: false };
 /** Lease zero: a proxima tentativa sai no ciclo seguinte, o que torna o retry testavel. */
-const RETRY_SETTINGS: AsaasEventSettings = { batchSize: 10, leaseTimeoutMs: 0, maxAttempts: 2 };
+const RETRY_SETTINGS: AsaasEventSettings = { batchSize: 10, leaseTimeoutMs: 0, maxAttempts: 2, retentionLedgerEnabled: false };
+/** A chave ligada: unico jeito de o consumidor tocar `retention_ledger` (secao 5). */
+const RETENTION_SETTINGS: AsaasEventSettings = { ...SETTINGS, retentionLedgerEnabled: true };
 
 describeWithDatabase('integracao: consumidor de asaas_events', () => {
   let pool: pg.Pool;
@@ -47,12 +49,21 @@ describeWithDatabase('integracao: consumidor de asaas_events', () => {
     await pool.query('UPDATE asaas_events SET processed_at = now() WHERE processed_at IS NULL');
   };
 
-  /** Cadeia minima: escola -> cliente -> acordo -> parcela, mais cliente/cobranca no provedor. */
-  const seedCharge = async (status = 'PENDING') => {
+  /**
+   * Cadeia minima: escola -> cliente -> acordo -> parcela, mais cliente/cobranca no provedor.
+   *
+   * `retention` configura a escola (percentual de `schools.retention_percentage`, `0015`); o default e
+   * escola sem retencao, que e o caso de toda escola recem-criada.
+   */
+  const seedCharge = async (
+    status = 'PENDING',
+    retention: { enabled: boolean; percentage: number | null } | null = null
+  ) => {
     const suffix = randomUUID().replace(/-/g, '').slice(0, 10);
-    const school = await pool.query<{ id: string }>('INSERT INTO schools (legal_name) VALUES ($1) RETURNING id', [
-      `Escola ${suffix}`
-    ]);
+    const school = await pool.query<{ id: string }>(
+      'INSERT INTO schools (legal_name, retention_enabled, retention_percentage) VALUES ($1, $2, $3) RETURNING id',
+      [`Escola ${suffix}`, retention?.enabled ?? false, retention?.percentage ?? null]
+    );
     const customer = await pool.query<{ id: string }>('INSERT INTO customers (full_name) VALUES ($1) RETURNING id', [
       `Cliente ${suffix}`
     ]);
@@ -77,7 +88,7 @@ describeWithDatabase('integracao: consumidor de asaas_events', () => {
        VALUES ($1, $2, $3, 'sandbox', 'BOLETO', 150.50, '2026-11-10', $4)`,
       [installment.rows[0]?.id, asaasCustomer.rows[0]?.id, externalChargeId, status]
     );
-    return { installmentId: String(installment.rows[0]?.id), externalChargeId };
+    return { installmentId: String(installment.rows[0]?.id), externalChargeId, schoolId: String(school.rows[0]?.id) };
   };
 
   /** Grava o evento como o webhook gravaria; devolve o id local. */
@@ -130,6 +141,26 @@ describeWithDatabase('integracao: consumidor de asaas_events', () => {
   const chargeStatus = async (externalChargeId: string): Promise<string | undefined> =>
     (await pool.query<{ status: string }>('SELECT status FROM asaas_charges WHERE external_id = $1', [externalChargeId]))
       .rows[0]?.status;
+
+  /** Lancamentos de retencao do pagamento, na ordem em que entraram no ledger (secao 5). */
+  const ledgerOf = async (installmentId: string) =>
+    (
+      await pool.query<{ entryType: string; amount: string; paymentId: string | null }>(
+        `SELECT entry_type AS "entryType", amount, payment_id AS "paymentId"
+           FROM retention_ledger WHERE installment_id = $1 ORDER BY created_at, entry_type`,
+        [installmentId]
+      )
+    ).rows;
+
+  const retentionOf = async (installmentId: string) =>
+    (
+      await pool.query<{ retainedAmount: string; retentionPercentage: string | null; retentionStatus: string | null }>(
+        `SELECT retained_amount AS "retainedAmount", retention_percentage AS "retentionPercentage",
+                retention_status AS "retentionStatus"
+           FROM payments WHERE installment_id = $1`,
+        [installmentId]
+      )
+    ).rows[0];
 
   const eventRow = async (id: string) =>
     (
@@ -480,4 +511,107 @@ describeWithDatabase('integracao: consumidor de asaas_events', () => {
     expect(audited.rowCount).toBe(1);
     expect(audited.rows[0]?.metadata.eventType).toBe('PAYMENT_RECEIVED');
   });
+
+  it('sem RETENTION_LEDGER_ENABLED nao lanca retencao, mesmo com a escola configurada', async () => {
+    await drainEvents();
+    const charge = await seedCharge('PENDING', { enabled: true, percentage: 0.15 });
+    await receiveEvent({ eventType: 'PAYMENT_RECEIVED', externalChargeId: charge.externalChargeId, status: 'RECEIVED' });
+    expect(await cycle()).toMatchObject({ applied: 1 });
+
+    expect(await ledgerOf(charge.installmentId)).toHaveLength(0);
+    const payment = await retentionOf(charge.installmentId);
+    expect(Number(payment?.retainedAmount)).toBe(0);
+    expect(payment?.retentionPercentage).toBeNull();
+    expect(payment?.retentionStatus).toBeNull();
+  });
+
+  it('com a chave ligada lanca `retention` pelo percentual da escola e nao duplica no replay', async () => {
+    await drainEvents();
+    const charge = await seedCharge('PENDING', { enabled: true, percentage: 0.15 });
+    const eventId = await receiveEvent({
+      eventType: 'PAYMENT_RECEIVED',
+      externalChargeId: charge.externalChargeId,
+      status: 'RECEIVED'
+    });
+    expect(await cycleWith(RETENTION_SETTINGS)).toMatchObject({ applied: 1 });
+
+    // 150,50 * 0,15 = 22,575 -> 22,58 (regra 2: round em centavos).
+    const entries = await ledgerOf(charge.installmentId);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ entryType: 'retention' });
+    expect(Number(entries[0]?.amount)).toBe(22.58);
+
+    const payment = await retentionOf(charge.installmentId);
+    expect(Number(payment?.retainedAmount)).toBe(22.58);
+    expect(Number(payment?.retentionPercentage)).toBe(0.15);
+
+    // Reprocessamento manual do mesmo evento: `NOT EXISTS` + indice unico seguram a duplicata.
+    await pool.query('UPDATE asaas_events SET processed_at = NULL, attempts = 0 WHERE id = $1', [eventId]);
+    expect((await cycleWith(RETENTION_SETTINGS)).applied).toBe(1);
+    expect(await ledgerOf(charge.installmentId)).toHaveLength(1);
+    expect(Number((await retentionOf(charge.installmentId))?.retainedAmount)).toBe(22.58);
+  });
+
+  it('escola sem percentual e escola com retencao desligada nao inventam lancamento', async () => {
+    await drainEvents();
+    const withoutPercentage = await seedCharge('PENDING', { enabled: true, percentage: null });
+    await receiveEvent({
+      eventType: 'PAYMENT_RECEIVED',
+      externalChargeId: withoutPercentage.externalChargeId,
+      status: 'RECEIVED'
+    });
+    await cycleWith(RETENTION_SETTINGS);
+    expect(await ledgerOf(withoutPercentage.installmentId)).toHaveLength(0);
+    expect((await retentionOf(withoutPercentage.installmentId))?.retentionStatus).toBe('not_applicable');
+
+    const disabled = await seedCharge('PENDING', { enabled: false, percentage: 0.15 });
+    await receiveEvent({ eventType: 'PAYMENT_RECEIVED', externalChargeId: disabled.externalChargeId, status: 'RECEIVED' });
+    await cycleWith(RETENTION_SETTINGS);
+    expect(await ledgerOf(disabled.installmentId)).toHaveLength(0);
+    expect((await retentionOf(disabled.installmentId))?.retentionStatus).toBe('not_applicable');
+  });
+
+
+  it('estorno depois do lancamento grava `reversal` e zera o retido', async () => {
+    await drainEvents();
+    const charge = await seedCharge('PENDING', { enabled: true, percentage: 0.15 });
+    await receiveEvent({ eventType: 'PAYMENT_RECEIVED', externalChargeId: charge.externalChargeId, status: 'RECEIVED' });
+    await cycleWith(RETENTION_SETTINGS);
+    expect(await ledgerOf(charge.installmentId)).toHaveLength(1);
+
+    await receiveEvent({ eventType: 'PAYMENT_REFUNDED', externalChargeId: charge.externalChargeId, status: 'REFUNDED' });
+    expect(await cycleWith(RETENTION_SETTINGS)).toMatchObject({ applied: 1 });
+
+    const entries = await ledgerOf(charge.installmentId);
+    expect(entries.map((entry) => entry.entryType)).toEqual(['retention', 'reversal']);
+    expect(Number(entries[1]?.amount)).toBe(22.58);
+    expect(Number((await retentionOf(charge.installmentId))?.retainedAmount)).toBe(0);
+
+    // O liquido do ledger e o que a rota da escola soma: retido bruto menos estornado.
+    const admin = await tokenOf('admin@example.com');
+    const summary = await app.inject({
+      method: 'GET',
+      url: `/api/v1/schools/${charge.schoolId}/retention`,
+      headers: { authorization: `Bearer ${admin}` }
+    });
+    expect(summary.statusCode).toBe(200);
+    const body = summary.json() as Record<string, string | boolean | null>;
+    expect(Number(body.retainedAmount)).toBe(0);
+    expect(Number(body.retentionAmount)).toBe(22.58);
+    expect(Number(body.reversedAmount)).toBe(22.58);
+    expect(Number(body.releasedAmount)).toBe(0);
+    expect(body.retentionEnabled).toBe(true);
+  });
+
+  it('evento que nao confirma dinheiro nao lanca retencao', async () => {
+    await drainEvents();
+    const charge = await seedCharge('PENDING', { enabled: true, percentage: 0.15 });
+    await receiveEvent({ eventType: 'PAYMENT_OVERDUE', externalChargeId: charge.externalChargeId, status: 'OVERDUE' });
+    expect(await cycleWith(RETENTION_SETTINGS)).toMatchObject({ applied: 1 });
+    expect(await ledgerOf(charge.installmentId)).toHaveLength(0);
+    // Sem dinheiro confirmado nao ha nem lancamento em `payments`: nao existe linha para marcar.
+    expect(await retentionOf(charge.installmentId)).toBeUndefined();
+  });
+
+
 });

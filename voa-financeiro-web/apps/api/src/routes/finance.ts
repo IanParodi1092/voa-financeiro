@@ -345,12 +345,23 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: RouteDeps): vo
   app.patch('/api/v1/payments/:id', { preHandler: requirePermission('finance:write') }, (request, reply) =>
     runPatch(request, reply, patchSpecs.payments));
 
+  /**
+   * Retencao da escola: `retainedAmount` e o **liquido** retido, com sinal por `entry_type`
+   * (`retention` soma, `release` e `reversal` subtraem - secao 5, regra 3). As parcelas por tipo vao
+   * junto porque um lancamento com `entry_type` fora do vocabulario entra como retencao, e o detalhe
+   * deixa isso visivel em vez de escondido na soma.
+   */
   app.get('/api/v1/schools/:schoolId/retention', { preHandler: requireAuthentication }, async (request, reply) => {
     if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
     const { schoolId } = request.params as { schoolId: string };
     if (!z.string().uuid().safeParse(schoolId).success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid school id', correlationId: request.id });
     const result = await pool.query(`SELECT s.id, s.retention_enabled AS "retentionEnabled", s.retention_target_amount AS "targetAmount",
-      COALESCE(SUM(r.amount), 0) AS "retainedAmount"
+      s.retention_percentage AS "retentionPercentage",
+      COALESCE(SUM(CASE r.entry_type WHEN 'release' THEN -r.amount WHEN 'reversal' THEN -r.amount ELSE r.amount END), 0)
+        AS "retainedAmount",
+      COALESCE(SUM(r.amount) FILTER (WHERE r.entry_type = 'retention'), 0) AS "retentionAmount",
+      COALESCE(SUM(r.amount) FILTER (WHERE r.entry_type = 'release'), 0) AS "releasedAmount",
+      COALESCE(SUM(r.amount) FILTER (WHERE r.entry_type = 'reversal'), 0) AS "reversedAmount"
       FROM schools s LEFT JOIN retention_ledger r ON r.school_id = s.id
       WHERE s.id = $1 AND s.deleted_at IS NULL GROUP BY s.id`, [schoolId]);
     if (!result.rows[0]) return reply.code(404).send({ code: 'NOT_FOUND', message: 'School not found', correlationId: request.id });

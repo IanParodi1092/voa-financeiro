@@ -106,30 +106,44 @@ O ledger e o que a rota `GET /schools/:schoolId/retention` soma como `retainedAm
 
 1. **Quando entra**: no evento que confirma dinheiro (`PAYMENT_CONFIRMED`, `PAYMENT_RECEIVED`,
    `PAYMENT_RECEIVED_IN_CASH`), **nunca** em `overdue`/`created`/`updated`.
-2. **Quanto**: `round(payment.value * percentual, 2)`, com o percentual em
-   `payments.retention_percentage` (`numeric(5,4)` com `CHECK 0..1`, coluna da `0008`).
+2. **Quanto**: `round(payment.value * percentual, 2)`. O percentual e da **escola**
+   (`schools.retention_percentage`, `numeric(5, 4)` com `CHECK 0..1`, migration `0015`), editavel por
+   `PATCH /api/v1/schools/:id`. `payments.retention_percentage` (`0008`) continua sendo o override por
+   parcela do fluxo legado (planilha `Pagamento_Lista`): o consumidor grava nele o percentual que
+   **efetivamente usou**, para a linha do pagamento se explicar sozinha.
 3. **`entry_type`**: `retention` na entrada; `release` quando o repasse sai; `reversal` quando o
-   pagamento e estornado depois de a retencao ter sido lancada.
+   pagamento e estornado depois de a retencao ter sido lancada. `retainedAmount` na rota e **liquido**:
+   `retention` soma, `release` e `reversal` subtraem (antes a rota somava tudo, e um estorno
+   *aumentava* o retido); `retentionAmount`/`releasedAmount`/`reversedAmount` vao junto. O mesmo
+   liquido vale para `payments.retained_amount`: recebe o valor lancado e volta a `0` no `reversal`.
+   Estorno **parcial** fica fora da v1: o ledger nao rateia, e `PAYMENT_PARTIALLY_REFUNDED` so muda o
+   estado do pagamento.
 4. **Escola sem retencao** (`schools.retention_enabled = false`) ou percentual nulo: **nenhum
-   lancamento**, e `payments.retention_status = 'not_applicable'`. Nao inventar percentual.
+   lancamento**, e `payments.retention_status = 'not_applicable'` - so quando ele ainda esta nulo, porque
+   `pending_approval`/`approved`/`released` e ciclo de aprovacao humana (`PATCH /payments/:id`) e o
+   consumidor nao o sobrescreve. Percentual `0` tambem nao lanca. Nao inventar percentual.
 5. **Idempotencia** (secao 15, item 4 do desenho): indice unico parcial em
-   `retention_ledger (payment_id, entry_type) WHERE payment_id IS NOT NULL` **e** `SELECT ... WHERE
+   `retention_ledger (payment_id, entry_type) WHERE payment_id IS NOT NULL` (`0014`) **e** `SELECT ... WHERE
    NOT EXISTS` no handler. O indice e a trava; o `NOT EXISTS` mantem o codigo correto num banco que
-   ainda nao aplicou a `0014`. Reaplicar o evento vira `ON CONFLICT DO NOTHING`.
+   ainda nao aplicou a `0014`, e o `ON CONFLICT DO NOTHING` (sem alvo, entao sem depender da inferencia
+   do indice parcial) absorve a corrida entre dois processos. Tudo absoluto, nunca incremental:
+   reaplicar o evento reescreve o mesmo numero.
 
-> **Lacuna de negocio, nao de codigo**: no fluxo legado o percentual vem da planilha
-> (`Pagamento_Lista` -> `payments.retention_percentage`). Para um pagamento **novo** vindo do Asaas
-> nao existe fonte canonica de percentual hoje. Opcoes, em ordem de preferencia:
+> **Resolvido em 2026-10-27: opcao 1.** A fonte do percentual para pagamento novo e a **escola**:
+> `schools.retention_percentage numeric(5, 4)` (`CHECK 0..1`, migration `0015`), aceito no
+> `POST /api/v1/schools` e editavel por `PATCH /api/v1/schools/:id` com `retentionEnabled`
+> (`catalog:write`). `NULL` = escola sem percentual; `retention_enabled` = interruptor, e os dois
+> precisam estar preenchidos/ligados. As alternativas ficam registradas e descartadas: manter so
+> `payments.retention_percentage` (opcao 2) depende de alguem preencher antes da baixa e a cobranca pode
+> ser paga antes, e `retention_target_amount` (opcao 3) e meta total, nao fracao.
 >
-> 1. `schools.retention_percentage numeric(5,4)` (`0014`) + `PATCH /api/v1/schools/:id`: uma regra por
->    escola, versionavel e editavel por `catalog:write`;
-> 2. continuar em `payments.retention_percentage`, preenchido por `PATCH /payments/:id` antes da baixa:
->    flexivel por parcela, mas depende de alguem preencher e a cobranca pode ser paga antes;
-> 3. derivar de `retention_target_amount`: **nao serve** - meta e total, nao fracao.
+> O lancamento continua atras de `RETENTION_LEDGER_ENABLED` (**default `false`**): a coluna existe e pode
+> ser preenchida, mas o ledger so recebe linha quando a chave for ligada por ambiente, depois de as
+> escolas estarem configuradas. Ligado, a regra 4 aparece no log como `asaas.event.retention_skipped`
+> (`debug`) e no `audit_logs` do evento.
 >
-> Recomendacao: opcao 1, com `NULL` significando "escola sem retencao" e `retention_enabled` como
-> interruptor. Enquanto a decisao nao vier, o consumidor aplica status e `payments` normalmente e o
-> lancamento no ledger fica atras de `RETENTION_LEDGER_ENABLED` (default `false`).
+> Continua aberto: a **origem do `release`** (repasse humano x evento do provedor) e o
+> `PAYMENT_RECEIVED_IN_CASH_UNDONE` (secao 9).
 
 ## 6. O que falta no schema (`0014_asaas_events_consumer.sql`)
 
@@ -143,7 +157,7 @@ tentou" de "tentou 5 vezes".
 | `asaas_events.last_attempt_at timestamptz` | separar "preso" de "esperando", igual a `locked_at` do outbox | nenhum |
 | `UNIQUE` parcial `payments (external_id) WHERE source = 'asaas' AND external_id IS NOT NULL` | ~~o `ON CONFLICT (external_id)` do consumidor exige a chave~~ **descartado**: `payments_external_idx` (`UNIQUE (source, external_id) WHERE external_id IS NOT NULL`, `0004`) ja existe, e o `ON CONFLICT` do consumidor usa essa chave. Um indice parcial em `(external_id)` seria redundante e quebraria a inferencia (o predicado dado nao implica `external_id IS NOT NULL`) | nenhum - nao entrou na `0014` |
 | `UNIQUE` parcial `retention_ledger (payment_id, entry_type) WHERE payment_id IS NOT NULL` | trava do item 4 | idem: `SELECT payment_id, entry_type, count(*) ... GROUP BY 1,2 HAVING count(*) > 1` |
-| (se opcao 1 da secao 5) `schools.retention_percentage numeric(5,4) CHECK (0..1)` + `PATCH /schools/:id` | fonte canonica do percentual para pagamento novo | decisao de negocio ainda aberta |
+| `schools.retention_percentage numeric(5,4) CHECK (0..1)` + `PATCH /schools/:id` | fonte canonica do percentual para pagamento novo (secao 5) | **feito** na `0015`, sem backfill (a coluna nasce `NULL` e `RETENTION_LEDGER_ENABLED` continua `false`) |
 
 Pre-flight sugerido (`SELECT` unico, somente leitura) antes da `0014`:
 
@@ -212,20 +226,30 @@ o fake nem e usado, o evento ja chega completo):
    continua elegivel; na quinta, `failed_at` + motivo;
 9. `GET /ops/asaas-events` (401 sem token, `read` para viewer) e `POST .../:id/retry`
    (`audit`, 409 para evento nao falho, 404 para id inexistente, 400 para id invalido);
-10. retencao com `RETENTION_LEDGER_ENABLED=true` e percentual configurado -> uma linha
-    `entry_type='retention'` com `round(value * pct, 2)`; reaplicar o evento nao cria a segunda.
+10. retencao com `RETENTION_LEDGER_ENABLED=true` e percentual configurado na escola -> uma linha
+    `entry_type='retention'` com `round(value * pct, 2)`, `payments.retained_amount` e
+    `retention_percentage` preenchidos; reaplicar o evento nao cria a segunda;
+11. com a chave em `false` (default) -> **nenhuma** linha no ledger, mesmo com a escola configurada;
+    escola sem percentual / com `retention_enabled = false` -> sem lancamento e
+    `payments.retention_status='not_applicable'`; evento que nao confirma dinheiro (`overdue`) -> sem
+    `payments` e sem ledger;
+12. `PAYMENT_REFUNDED` depois do lancamento -> `entry_type='reversal'` com o mesmo valor,
+    `retained_amount` de volta a `0` e `GET /schools/:id/retention` com `retainedAmount` liquido
+    (`retentionAmount` e `reversedAmount` como detalhe).
 
 ## 9. Ordem de implementacao e pendencias
 
 1. `0014_asaas_events_consumer.sql` (contador/lease + indice unico do ledger) com o pre-flight da
-   secao 6 rodado antes em `voa_staging`;
-2. `domain/asaas-events.ts` (mapa puro) + testes unitarios - nada toca banco;
-3. `db/asaas-events.ts` (claim/done/fail/resumo/retry) espelhando `db/outbox.ts`;
-4. `outbox/events.ts` (handler) **sem** ledger, com `RETENTION_LEDGER_ENABLED=false` de default;
-5. endpoints de operacao + testes de integracao;
-6. ledger ligado, depois de decidida a fonte do percentual (secao 5).
+   secao 6 rodado antes em `voa_staging` - **feito**;
+2. `domain/asaas-events.ts` (mapa puro) + testes unitarios - nada toca banco - **feito**;
+3. `db/asaas-events.ts` (claim/done/fail/resumo/retry) espelhando `db/outbox.ts` - **feito**;
+4. `outbox/events.ts` (handler) **sem** ledger, com `RETENTION_LEDGER_ENABLED=false` de default -
+   **feito**;
+5. endpoints de operacao + testes de integracao - **feito**;
+6. ledger: `schools.retention_percentage` (`0015`), `PATCH /schools/:id`, lancamento de `retention` e
+   `reversal` no consumidor e `retainedAmount` liquido na rota da escola - **feito**, atras da chave.
 
-Pendencias que bloqueiam apenas o item 6: fonte do percentual de retencao; se `entry_type='release'`
-nasce de acao humana (hoje nao existe rota de repasse) ou de evento do provedor; e o que fazer com
-`PAYMENT_RECEIVED_IN_CASH_UNDONE` (proposta: `ignored` na v1, com ajuste manual, porque dinheiro em
-especie nao passa pelo fluxo `billingType = UNDEFINED/BOLETO/PIX`).
+Pendencias que **nao** bloqueiam mais o ledger (a fonte do percentual foi decidida): se
+`entry_type='release'` nasce de acao humana (hoje nao existe rota de repasse) ou de evento do provedor;
+e o que fazer com `PAYMENT_RECEIVED_IN_CASH_UNDONE` (proposta: `ignored` na v1, com ajuste manual,
+porque dinheiro em especie nao passa pelo fluxo `billingType = UNDEFINED/BOLETO/PIX`).

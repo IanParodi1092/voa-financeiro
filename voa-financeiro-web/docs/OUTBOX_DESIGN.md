@@ -468,13 +468,17 @@ estao feitos; o 7 e o 8 continuam pendentes por decisao de negocio (secao 15).
    (`POST /customers/:id/asaas` e `POST /installments/:id/charge`), cada um abrindo transacao propria e
    chamando `enqueueOutbox` dentro dela; `deps.outbox?.wake()` depois do `COMMIT`, com a referencia
    preenchida por `server.ts`. `POST /installments` segue sem enfileirar.
-8. `apps/api/src/outbox/events.ts`: consumidor de `asaas_events` (secao 9, secao 15, item 4).
+8. **feito** - `apps/api/src/outbox/events.ts`: consumidor de `asaas_events` (secao 9, secao 15, item 4),
+   com `0014_asaas_events_consumer.sql` (contador/lease + trava do ledger), `db/asaas-events.ts`,
+   `domain/asaas-events.ts` e as rotas de operacao. O ledger passou a lancar de verdade com a
+   `0015_schools_retention_percentage.sql` (percentual por escola), atras de `RETENTION_LEDGER_ENABLED`.
 9. **feito** - retencao: `purgeDoneOutbox` (`db/outbox.ts`), `0013_outbox_retention.sql`,
    `OUTBOX_RETENTION_DAYS` e o expurgo horario no laco (secao 15, item 6). Saiu antes do passo 7
    porque nao depende da decisao de negocio.
 
 Os passos 1-7 e 9 nao dependem de chave do Asaas: o produtor (7) so grava a intencao na fila, quem
-fala com o provedor e o worker. Resta o passo 8.
+fala com o provedor e o worker. O passo 8 tambem nao depende de chave (o evento chega pelo webhook),
+mas depende do token `ASAAS_WEBHOOK_TOKEN` do lado do provedor para o webhook aceitar a chamada.
 
 ## 15. Decisoes pendentes (bloqueiam a implementacao, nao o desenho)
 
@@ -554,10 +558,12 @@ Testes: 30 unitarios em `domain/outbox.test.ts` e 11 de integracao em
 
 O que falta:
 
-1. consumidor de `asaas_events` (secao 9): sem ele o webhook grava e ninguem aplica status - e o outro
-   lado do ciclo (a cobranca sai, o pagamento nao volta para `installments`/`payments`). A regra esta
-   escrita em **`docs/ASAAS_EVENT_RULES.md`** (2026-10-27), pronta para virar codigo na ordem da secao
-   9 daquele documento; so a fonte do percentual de retencao continua aberta.
+1. ~~consumidor de `asaas_events` (secao 9)~~ **feito**: `apps/api/src/outbox/events.ts`, `0014` e as
+   rotas de operacao; a regra esta em **`docs/ASAAS_EVENT_RULES.md`**. O ledger de retencao lanca
+   `retention`/`reversal` com o percentual de `schools.retention_percentage` (`0015`), atras de
+   `RETENTION_LEDGER_ENABLED` (default `false`). Continua aberto so o que depende de negocio: a origem
+   do `entry_type='release'` (repasse humano x evento do provedor) e o
+   `PAYMENT_RECEIVED_IN_CASH_UNDONE`.
 
 Resolvidos desde o primeiro mapa: primeiro produtor decidido e implementado (secao 15, item 1),
 idempotencia do Asaas verificada na documentacao (item 5 - nao existe header; a recomendacao oficial e
