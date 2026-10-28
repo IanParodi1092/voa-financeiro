@@ -44,6 +44,66 @@ export function chargeDedupeKey(installmentId: string): string {
   return `asaas.charge.create:${installmentId}`;
 }
 
+/** Campos do cliente local que viram o payload de `asaas.customer.create`. */
+export interface CustomerCreateInput {
+  customerId: string;
+  fullName: string;
+  documentNumber: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
+/**
+ * Tipo literal (e nao `interface`) de proposito: so assim o TS aceita atribuir o payload a
+ * `Record<string, unknown>` em `OutboxMessage`, que e o formato gravado em `jsonb`.
+ */
+export type CustomerCreatePayload = {
+  customerId: string;
+  name: string;
+  documentNumber?: string;
+  email?: string;
+  phone?: string;
+};
+
+/**
+ * Monta o payload do cliente sem deixar string vazia virar campo invalido.
+ *
+ * O legado tem `document_number` vazio ou com pontuacao; o handler exige de 11 a 20 caracteres
+ * **quando o campo existe**, entao um `''` faria a mensagem morrer na primeira tentativa
+ * (`payload invalido`). Omitir e melhor: se o documento for obrigatorio para a conta, o Asaas
+ * responde erro de dado e o motivo aparece em `last_error` - o operador corrige o cadastro em vez de
+ * descobrir um bug de serializacao.
+ */
+export function customerCreatePayload(input: CustomerCreateInput): CustomerCreatePayload {
+  const payload: CustomerCreatePayload = { customerId: input.customerId, name: input.fullName.trim() };
+  const documentNumber = input.documentNumber?.trim() ?? '';
+  if (documentNumber.length >= 11) payload.documentNumber = documentNumber;
+  const email = input.email?.trim() ?? '';
+  if (email.length > 0) payload.email = email;
+  const phone = input.phone?.trim() ?? '';
+  if (phone.length > 0) payload.phone = phone;
+  return payload;
+}
+
+/** Limite do `description` da cobranca no Asaas. */
+export const ASAAS_DESCRIPTION_MAX_LENGTH = 500;
+
+/**
+ * Descricao que o pagador ve no boleto/PIX: identifica parcela e acordo sem depender de o provedor
+ * formatar nada. Truncada no limite do campo em vez de recusada - um `reference` livre de 200
+ * caracteres nao pode matar a cobranca.
+ */
+export function chargeDescription(input: {
+  installmentNumber: number;
+  installmentsCount: number;
+  reference: string | null;
+}): string {
+  const base = `Parcela ${input.installmentNumber}/${input.installmentsCount}`;
+  const reference = input.reference?.trim() ?? '';
+  const description = reference.length > 0 ? `${base} - ${reference}` : base;
+  return description.slice(0, ASAAS_DESCRIPTION_MAX_LENGTH);
+}
+
 /** Base do backoff: a primeira tentativa falha e a segunda acontece ~5s depois. */
 export const OUTBOX_BASE_DELAY_SECONDS = 5;
 

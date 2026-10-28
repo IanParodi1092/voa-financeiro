@@ -18,6 +18,8 @@ O codigo da API separa as rotas por contexto, um arquivo por grupo: `routes/ops.
   malformado responde `400` mesmo sem banco
 - `GET /api/v1/guardians/customer-candidates` - fila de promocao responsavel -> cliente (ver a secao propria)
 - `GET/POST /api/v1/agreements`, `GET/POST /api/v1/installments`, `GET/POST /api/v1/payments`
+- `POST /api/v1/customers/:id/asaas` e `POST /api/v1/installments/:id/charge` (`finance:write`) - os dois
+  produtores da fila de saida: sincronizar o cliente e gerar a cobranca (ver a secao "Fila de saida")
 - `GET /api/v1/schools/:schoolId/retention`
 - `PATCH /api/v1/schools|customers|students|guardians|student-contacts/:id` (`catalog:write`) e
   `PATCH /api/v1/agreements|installments|payments/:id` (`finance:write`)
@@ -218,9 +220,29 @@ As chamadas de **saida** ao Asaas nao viram rota REST: entram numa fila dentro d
 | linha em `pending` ou `processing` | 409 | `OUTBOX_NOT_DEAD` |
 | banco indisponivel | 503 | `DATABASE_UNAVAILABLE` |
 
-`POST /api/v1/installments` ainda **nao** enfileira cobranca: o primeiro produtor depende de decisao de
-negocio (`docs/OUTBOX_DESIGN.md`, secao 15, item 1). Sem `ASAAS_API_KEY` a API sobe, o worker fica idle e
-as linhas ficam `pending`.
+Os dois produtores sao **acoes explicitas** (decisao da secao 15, item 1 do desenho): cobrar nunca e
+efeito colateral de criar parcela nem de importar o legado.
+
+- `POST /api/v1/customers/:id/asaas` (`finance:write`) - enfileira `asaas.customer.create` com
+  `dedupe_key = asaas.customer.create:<customer_id>`. Cliente que ja tem linha em `asaas_customers`
+  responde `200 { queued: false, synced: true, asaasCustomerId, externalId }`; o primeiro pedido
+  responde `202 { queued: true, dedupeKey }`;
+- `POST /api/v1/installments/:id/charge` (`finance:write`; corpo `{ "billingType": "BOLETO" | "PIX" |
+  "CREDIT_CARD" | "UNDEFINED" }`, default `UNDEFINED` - o pagador escolhe na fatura) - enfileira
+  `asaas.charge.create` com `dedupe_key = asaas.charge.create:<installment_id>` e o snapshot de
+  valor/vencimento. `202` quando a linha nasce, `200 { queued: false }` quando a intencao ja estava na
+  fila (o segundo `POST` nao duplica cobranca).
+
+| Situacao | Status | `code` |
+|---|---|---|
+| corpo ou `id` invalido | 400 | `INVALID_REQUEST` |
+| cliente ou parcela inexistente | 404 | `CUSTOMER_NOT_FOUND` / `INSTALLMENT_NOT_FOUND` |
+| parcela fora de `pending` ou com valor zero | 409 | `INSTALLMENT_NOT_BILLABLE` |
+| cliente sem `asaas_customers` | 409 | `CUSTOMER_NOT_SYNCED` |
+| banco indisponivel | 503 | `DATABASE_UNAVAILABLE` |
+
+Sem `ASAAS_API_KEY` a API sobe, o worker fica idle e as linhas ficam `pending`. Reenviar uma cobranca
+que morreu em `dead` e sempre `POST /api/v1/ops/outbox/:id/retry`, nunca um segundo `/charge`.
 
 ## Permissoes (RBAC)
 
@@ -230,7 +252,7 @@ As permissoes ficam em `apps/api/src/auth/roles.ts` e sao conferidas antes de to
 |---|---|---|
 | `read` | todas as leituras | `admin`, `finance`, `operator`, `viewer` |
 | `catalog:write` | `schools`, `customers`, `contacts` (`POST`), `students` (`POST`) e `schools`, `customers`, `students`, `guardians`, `student-contacts` (`PATCH`; o de `guardians` inclui a trava de pagador da promocao) | `admin`, `operator` |
-| `finance:write` | `agreements`, `installments`, `payments` (`POST` e `PATCH`) | `admin`, `finance` |
+| `finance:write` | `agreements`, `installments`, `payments` (`POST` e `PATCH`), `POST /customers/:id/asaas` e `POST /installments/:id/charge` | `admin`, `finance` |
 | `migration:write` | registro do lote, `validate`, `commit` e resolucao de achado | `admin` |
 | `audit` | `GET /audit-logs` | `admin` |
 

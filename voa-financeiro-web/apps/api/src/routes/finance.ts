@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { recordAudit } from '../audit.js';
+import { enqueueOutbox } from '../db/outbox.js';
+import { chargeDedupeKey, chargeDescription, customerCreatePayload, customerDedupeKey } from '../domain/outbox.js';
 import { patchSpecs } from '../domain/patch-specs.js';
 import type { RouteDeps } from '../http/deps.js';
 import { actorIdOf, requireAuthentication, requirePermission } from '../http/guards.js';
@@ -29,9 +31,25 @@ const paymentSchema = z.object({
   externalId: z.string().trim().max(200).optional()
 });
 
+/**
+ * `UNDEFINED` e o default de proposito: o pagador escolhe boleto, PIX ou cartao na fatura do Asaas,
+ * e a escola nao precisa decidir por parcela. Quem quiser forcar um meio manda `billingType`.
+ */
+const chargeRequestSchema = z.object({
+  billingType: z.enum(['BOLETO', 'PIX', 'CREDIT_CARD', 'UNDEFINED']).default('UNDEFINED')
+});
+
+const uuidSchema = z.string().uuid();
+
+/** Falha que a rota decide antes/depois do `COMMIT`; o corpo ganha `correlationId` na resposta. */
+interface RouteFailure {
+  status: number;
+  body: { code: string; message: string };
+}
+
 /** Cadeia financeira: acordos, parcelas, pagamentos e a retencao por escola. */
 export function registerFinanceRoutes(app: FastifyInstance, deps: RouteDeps): void {
-  const { pool } = deps;
+  const { pool, config } = deps;
   const runPatch = deps.patchRunner;
 
   app.get('/api/v1/agreements', { preHandler: requireAuthentication }, async (request, reply) => {
@@ -119,6 +137,203 @@ export function registerFinanceRoutes(app: FastifyInstance, deps: RouteDeps): vo
       entityId: String(result.rows[0]?.id ?? '')
     });
     return reply.code(201).send(result.rows[0]);
+  });
+
+  /**
+   * Sincroniza o cliente com o Asaas: enfileira `asaas.customer.create`.
+   *
+   * E pre-requisito de `POST /installments/:id/charge` (a cobranca usa o id do cliente no provedor),
+   * e por isso mora ao lado dela, com `finance:write`, e nao no catalogo. Idempotente dos dois lados:
+   * `customerDedupeKey` impede duas linhas na fila e um cliente que ja tem `asaas_customers`
+   * responde `synced: true` sem enfileirar nada.
+   */
+  app.post('/api/v1/customers/:id/asaas', { preHandler: requirePermission('finance:write') }, async (request, reply) => {
+    const parsedId = uuidSchema.safeParse((request.params as { id?: string }).id);
+    if (!parsedId.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid customer id', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+
+    const customerId = parsedId.data;
+    const dedupeKey = customerDedupeKey(customerId);
+    let failure: RouteFailure | null = null;
+    let queued = false;
+    let synced: { asaasCustomerId: string; externalId: string } | null = null;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const found = await client.query<{
+        fullName: string;
+        documentNumber: string | null;
+        email: string | null;
+        phone: string | null;
+        asaasCustomerId: string | null;
+        externalId: string | null;
+      }>(
+        `SELECT c.full_name AS "fullName", c.document_number AS "documentNumber", c.email, c.phone,
+                ac.id AS "asaasCustomerId", ac.external_id AS "externalId"
+           FROM customers c
+           LEFT JOIN asaas_customers ac ON ac.customer_id = c.id
+          WHERE c.id = $1 AND c.deleted_at IS NULL
+          FOR UPDATE OF c`,
+        [customerId]
+      );
+      const row = found.rows[0];
+      if (!row) {
+        failure = { status: 404, body: { code: 'CUSTOMER_NOT_FOUND', message: 'Customer not found' } };
+      } else if (row.asaasCustomerId !== null && row.externalId !== null) {
+        synced = { asaasCustomerId: row.asaasCustomerId, externalId: row.externalId };
+      } else {
+        queued = await enqueueOutbox(
+          client,
+          {
+            topic: 'asaas.customer.create',
+            dedupeKey,
+            payload: customerCreatePayload({
+              customerId,
+              fullName: row.fullName,
+              documentNumber: row.documentNumber,
+              email: row.email,
+              phone: row.phone
+            }),
+            entity: { type: 'customers', id: customerId },
+            correlationId: request.id
+          },
+          { environment: config.ASAAS_ENVIRONMENT, maxAttempts: config.OUTBOX_MAX_ATTEMPTS }
+        );
+      }
+      await client.query(failure === null ? 'COMMIT' : 'ROLLBACK');
+    } catch (error) {
+      // Um `COMMIT` ja feito falha no rollback com "no transaction in progress"; nada a desfazer.
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    if (failure) return reply.code(failure.status).send({ ...failure.body, correlationId: request.id });
+    if (synced) return { customerId, queued: false, synced: true, ...synced };
+    if (queued) {
+      await recordAudit(pool, request.log, request.id, {
+        action: 'customer.asaas_sync_requested',
+        actorId: actorIdOf(request),
+        entityType: 'customers',
+        entityId: customerId,
+        metadata: { dedupeKey }
+      });
+    }
+    deps.outbox?.wake();
+    return reply.code(queued ? 202 : 200).send({ customerId, queued, dedupeKey });
+  });
+
+  /**
+   * Gera a cobranca de uma parcela: enfileira `asaas.charge.create`.
+   *
+   * Decisao de negocio (`docs/OUTBOX_DESIGN.md`, secao 15, item 1): cobrar e acao **explicita**,
+   * nunca efeito de criar parcela ou de importar o legado. Cada recusa acontece antes de enfileirar e
+   * diz o que falta: parcela inexistente (404), parcela que nao esta mais `pending` ou sem valor
+   * (409 `INSTALLMENT_NOT_BILLABLE`) e cliente sem `asaas_customers` (409 `CUSTOMER_NOT_SYNCED`, com
+   * a rota que resolve).
+   *
+   * `queued: false` com 200 e o `POST` repetido: a `dedupeKey` da parcela ja estava na fila. Para
+   * reenviar uma cobranca que morreu, o caminho e `POST /api/v1/ops/outbox/:id/retry`.
+   */
+  app.post('/api/v1/installments/:id/charge', { preHandler: requirePermission('finance:write') }, async (request, reply) => {
+    const parsedId = uuidSchema.safeParse((request.params as { id?: string }).id);
+    if (!parsedId.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid installment id', correlationId: request.id });
+    const parsedBody = chargeRequestSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid charge request', correlationId: request.id });
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+
+    const installmentId = parsedId.data;
+    const { billingType } = parsedBody.data;
+    const dedupeKey = chargeDedupeKey(installmentId);
+    let failure: RouteFailure | null = null;
+    let queued = false;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const found = await client.query<{
+        installmentNumber: number;
+        status: string;
+        dueDate: string;
+        originalAmount: string;
+        reference: string | null;
+        installmentsCount: number;
+        asaasCustomerId: string | null;
+      }>(
+        `SELECT i.installment_number AS "installmentNumber", i.status,
+                to_char(i.due_date, 'YYYY-MM-DD') AS "dueDate", i.original_amount AS "originalAmount",
+                a.reference, a.installments_count AS "installmentsCount", ac.id AS "asaasCustomerId"
+           FROM installments i
+           JOIN agreements a ON a.id = i.agreement_id
+           LEFT JOIN asaas_customers ac ON ac.customer_id = a.customer_id
+          WHERE i.id = $1 AND i.deleted_at IS NULL
+          FOR UPDATE OF i`,
+        [installmentId]
+      );
+      const row = found.rows[0];
+      if (!row) {
+        failure = { status: 404, body: { code: 'INSTALLMENT_NOT_FOUND', message: 'Installment not found' } };
+      } else if (row.status !== 'pending') {
+        failure = { status: 409, body: { code: 'INSTALLMENT_NOT_BILLABLE', message: `Installment is ${row.status}` } };
+      } else if (Number(row.originalAmount) <= 0) {
+        failure = {
+          status: 409,
+          body: { code: 'INSTALLMENT_NOT_BILLABLE', message: 'Installment has no amount to charge' }
+        };
+      } else if (row.asaasCustomerId === null) {
+        failure = {
+          status: 409,
+          body: {
+            code: 'CUSTOMER_NOT_SYNCED',
+            message: 'Customer has no Asaas registration; POST /api/v1/customers/:id/asaas first'
+          }
+        };
+      } else {
+        queued = await enqueueOutbox(
+          client,
+          {
+            topic: 'asaas.charge.create',
+            dedupeKey,
+            payload: {
+              installmentId,
+              asaasCustomerId: row.asaasCustomerId,
+              billingType,
+              value: Number(row.originalAmount),
+              dueDate: row.dueDate,
+              description: chargeDescription({
+                installmentNumber: row.installmentNumber,
+                installmentsCount: row.installmentsCount,
+                reference: row.reference
+              })
+            },
+            entity: { type: 'installments', id: installmentId },
+            correlationId: request.id
+          },
+          { environment: config.ASAAS_ENVIRONMENT, maxAttempts: config.OUTBOX_MAX_ATTEMPTS }
+        );
+      }
+      await client.query(failure === null ? 'COMMIT' : 'ROLLBACK');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    if (failure) return reply.code(failure.status).send({ ...failure.body, correlationId: request.id });
+    if (queued) {
+      await recordAudit(pool, request.log, request.id, {
+        action: 'installment.charge_requested',
+        actorId: actorIdOf(request),
+        entityType: 'installments',
+        entityId: installmentId,
+        metadata: { dedupeKey, billingType }
+      });
+    }
+    deps.outbox?.wake();
+    return reply.code(queued ? 202 : 200).send({ installmentId, dedupeKey, queued });
   });
 
   app.patch('/api/v1/agreements/:id', { preHandler: requirePermission('finance:write') }, (request, reply) =>

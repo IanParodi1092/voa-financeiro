@@ -140,14 +140,21 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (dedupe_key) DO NOTHING
 ```
 
-Primeiro produtor: `POST /api/v1/installments` (`apps/api/src/routes/finance.ts:75`). Hoje ele faz
-um `pool.query` solto; passa a abrir transacao explicita (`pool.connect()` -> `BEGIN` ->
-`INSERT installments` -> `enqueueOutbox` -> `COMMIT`) e a chamar `worker.wake()` depois do commit.
-O `wake` e otimizacao: se ele nunca for chamado, o poll de 2s resolve.
+Primeiro produtor (decidido em 2026-10-27, secao 15 item 1): **acao explicita**, em duas rotas de
+`apps/api/src/routes/finance.ts`:
 
-Efeito colateral desejado: com o enfileiramento dentro do `BEGIN`, a carga de parcelas do legado
-tambem nao gera cobranca em lote. A carga continua sem enfileirar - decidir "cobrar 15.535
-parcelas historicas" e decisao de negocio, nao efeito de importacao (ver secao 15, item 1).
+- `POST /api/v1/customers/:id/asaas` -> `BEGIN` -> `SELECT ... FOR UPDATE` do cliente + `asaas_customers`
+  -> `enqueueOutbox('asaas.customer.create')` -> `COMMIT`;
+- `POST /api/v1/installments/:id/charge` -> `BEGIN` -> `SELECT ... FOR UPDATE OF i` da parcela, do
+  acordo e de `asaas_customers` -> `enqueueOutbox('asaas.charge.create')` -> `COMMIT`.
+
+`POST /api/v1/installments` **nao** enfileira nada: parcela nova continua sendo so parcela. Assim a
+carga de parcelas do legado - e qualquer script que crie parcela - nunca gera cobranca em lote:
+decidir "cobrar 15.535 parcelas historicas" continua sendo ato deliberado, agora parcela a parcela.
+
+Depois do `COMMIT` a rota chama `deps.outbox?.wake()`. O `wake` e otimizacao: se ele nunca for
+chamado, o poll de 2s resolve. A referencia e mutavel porque o worker sobe em `server.ts`, depois de
+`buildApp`.
 
 ## 5. Claim
 
@@ -395,7 +402,9 @@ worker registra `asaas client not configured` e nao pega nada. Webhook e worker 
 - a tabela da secao 7 inteira: `400/401/403/404/409/422` -> `dead`, `429` com e sem `Retry-After`,
   `408/425/500/502/503` -> retry, `504` e timeout sem `status` -> retry **ambiguo**, `ECONNREFUSED` e
   classe `08` -> retry nao ambiguo, `23505` -> `dead`;
-- `dedupeKey` estavel por entidade e `topic` fora da lista fechada recusado.
+- `dedupeKey` estavel por entidade e `topic` fora da lista fechada recusado;
+- payload do produtor: cliente omite campo vazio e descarta documento com menos de 11 caracteres,
+  nome/email/telefone normalizados, e a descricao da parcela trunca em 500.
 
 **Integracao** (`apps/api/src/outbox/outbox.integration.test.ts`), reaproveitando o harness de
 `app.integration.test.ts` (schema temporario, `TEST_DATABASE_URL`, `applyMigrations`):
@@ -416,7 +425,14 @@ worker registra `asaas client not configured` e nao pega nada. Webhook e worker 
    com `attempts = 0`, `pending` -> 409, uuid inexistente -> 404, id invalido -> 400 antes de tocar o
    banco, `viewer` -> 403, e `audit_logs` guardando o `previousError`.
 9. expurgo: `done` com `completed_at` mais antigo que a retencao sai, `done` recente / `pending` /
-   `dead` ficam, e o ciclo sem `purgeDone` nao apaga nada (expurgo nao e efeito colateral do poll).
+   `dead` ficam, e o ciclo sem `purgeDone` nao apaga nada (expurgo nao e efeito colateral do poll);
+10. `POST /customers/:id/asaas`: `202` na primeira vez, `200 { queued: false }` na segunda (uma linha
+    so), `200 { synced: true }` depois de o worker gravar `asaas_customers`, `404`/`400` e `viewer`
+    recebendo `403`;
+11. `POST /installments/:id/charge`: `409 CUSTOMER_NOT_SYNCED` sem `asaas_customers` **e nenhuma linha
+    na fila**; `202` com o snapshot (`value`, `dueDate`, `billingType` default `UNDEFINED`,
+    `description`); segundo `POST` responde `200` sem duplicar; `409 INSTALLMENT_NOT_BILLABLE` em
+    parcela paga; `404`/`400`; e `audit_logs` com `installment.charge_requested`.
 
 O `AsaasClient` e uma interface injetada; **nenhum teste toca a rede**. O fake (`FakeAsaasClient`) mora
 no proprio arquivo de teste e agenda falha por `externalReference` - assim um cenario nao consome a
@@ -444,21 +460,27 @@ estao feitos; o 7 e o 8 continuam pendentes por decisao de negocio (secao 15).
    e `server.ts` (start/stop na ordem da secao 10).
 6. **feito** - `routes/ops.ts`: `GET /api/v1/ops/outbox`, `POST /api/v1/ops/outbox/:id/retry`, com
    `apps/api/src/outbox/outbox.integration.test.ts`; `docs/API_ROUTES.md` ganhou as duas rotas.
-7. Produtor: `POST /api/v1/installments` passa a abrir transacao e enfileirar (secao 15, item 1).
+7. **feito** - produtor: os dois endpoints explicitos em `routes/finance.ts`
+   (`POST /customers/:id/asaas` e `POST /installments/:id/charge`), cada um abrindo transacao propria e
+   chamando `enqueueOutbox` dentro dela; `deps.outbox?.wake()` depois do `COMMIT`, com a referencia
+   preenchida por `server.ts`. `POST /installments` segue sem enfileirar.
 8. `apps/api/src/outbox/events.ts`: consumidor de `asaas_events` (secao 9, secao 15, item 4).
 9. **feito** - retencao: `purgeDoneOutbox` (`db/outbox.ts`), `0013_outbox_retention.sql`,
    `OUTBOX_RETENTION_DAYS` e o expurgo horario no laco (secao 15, item 6). Saiu antes do passo 7
    porque nao depende da decisao de negocio.
 
-Os passos 1-6 e 9 nao dependem de chave do Asaas; o 7 depende de decisao de negocio (secao 15,
-item 1).
+Os passos 1-7 e 9 nao dependem de chave do Asaas: o produtor (7) so grava a intencao na fila, quem
+fala com o provedor e o worker. Resta o passo 8.
 
 ## 15. Decisoes pendentes (bloqueiam a implementacao, nao o desenho)
 
-1. **Quem e o primeiro produtor?** `POST /api/v1/installments` (parcela nova cria cobranca
-   automaticamente) ou uma acao explicita de "gerar cobranca" sobre a parcela existente? A segunda
-   e mais segura para operacao financeira e nao cobra retroativo por acidente; a primeira e menos
-   clique. Nenhuma das duas cobra as 15.535 parcelas do legado sem uma acao deliberada.
+1. **Quem e o primeiro produtor?** - **resolvido (2026-10-27)**: acao explicita. Cobrar e
+   `POST /api/v1/installments/:id/charge`, sincronizar o pagador e `POST /api/v1/customers/:id/asaas`, e
+   `POST /api/v1/installments` continua sem enfileirar nada. Motivo: em operacao financeira o envio de
+   uma cobranca e ato deliberado (gera boleto/PIX e comunica o responsavel), e a rota explicita tambem
+   serve as 15.535 parcelas historicas sem depender de reimportar nada. Os 409 da rota dizem o que
+   falta (`CUSTOMER_NOT_SYNCED` aponta para a rota de sincronizacao), entao a ordem
+   cliente -> cobranca e auto-explicativa.
 2. **4xx vira `dead` imediato** (tabela da secao 7). Existe caso de 400 transitorio nesse provedor?
 3. **Granularidade do `CHECK` de `topic`** - **resolvido**: lista fechada mantida. Um topic novo
    custa uma migration (expand), o que forca revisao em vez de aceitar string arbitraria na fila que
@@ -511,26 +533,26 @@ Mapa do que existe (2026-10-27), para o proximo passo nao procurar arquivo por a
 |---|---|---|
 | schema | `apps/api/migrations/0012_outbox_events.sql` | `outbox_events` + 4 indices |
 | schema | `apps/api/migrations/0013_outbox_retention.sql` | indice parcial dos `done` para o expurgo |
-| regras | `apps/api/src/domain/outbox.ts` | `dedupeKey`, backoff, `classifyFailure`, `ProviderError` |
+| regras | `apps/api/src/domain/outbox.ts` | `dedupeKey`, backoff, `classifyFailure`, payload do produtor |
 | SQL | `apps/api/src/db/outbox.ts` | enqueue, claim, done/retry/dead, reaper, expurgo, resumo, retry |
 | provedor | `apps/api/src/integrations/asaas-client.ts` | `AsaasClient` + implementacao `fetch` |
 | handlers | `apps/api/src/outbox/handlers.ts` | topic -> chamada + `asaas_customers`/`asaas_charges` |
 | laco | `apps/api/src/outbox/worker.ts` | `runOutboxCycle`, `startOutboxWorker`, expurgo horario |
-| processo | `apps/api/src/server.ts` | start no boot, stop antes de `app.close()` |
+| produtor | `apps/api/src/routes/finance.ts` | `POST /customers/:id/asaas`, `POST /installments/:id/charge` |
+| processo | `apps/api/src/server.ts` | start no boot, `wake` para as rotas, stop antes de `app.close()` |
 | operacao | `apps/api/src/routes/ops.ts` | `GET /ops/outbox`, `POST /ops/outbox/:id/retry` |
 
-Testes: 26 unitarios em `domain/outbox.test.ts` e 9 de integracao em
+Testes: 30 unitarios em `domain/outbox.test.ts` e 11 de integracao em
 `outbox/outbox.integration.test.ts` (schema descartavel, fake no lugar do provedor).
 
-O que falta, na ordem em que importa:
+O que falta:
 
-1. decidir o primeiro produtor (secao 15, item 1) e ligar `enqueueOutbox` em
-   `POST /api/v1/installments`;
-2. consumidor de `asaas_events` (secao 9): sem ele o webhook grava e ninguem aplica status.
+1. consumidor de `asaas_events` (secao 9): sem ele o webhook grava e ninguem aplica status - e o outro
+   lado do ciclo (a cobranca sai, o pagamento nao volta para `installments`/`payments`).
 
-Resolvidos desde o primeiro mapa: idempotencia do Asaas verificada na documentacao (secao 15, item
-5 - nao existe header; a recomendacao oficial e o fluxo da secao 8) e expurgo das linhas `done`
-implementado (secao 15, item 6).
+Resolvidos desde o primeiro mapa: primeiro produtor decidido e implementado (secao 15, item 1),
+idempotencia do Asaas verificada na documentacao (item 5 - nao existe header; a recomendacao oficial e
+o fluxo da secao 8) e expurgo das linhas `done` (item 6).
 
 Nota de infraestrutura: `applyMigrations` (`apps/api/src/db/run-migrations.ts`) passou a segurar um
 `pg_advisory_lock` durante a execucao. Duas execucoes concorrentes - duas instancias subindo juntas,

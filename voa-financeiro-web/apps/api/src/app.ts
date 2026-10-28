@@ -6,7 +6,7 @@ import jwt from '@fastify/jwt';
 import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
-import type { RouteDeps } from './http/deps.js';
+import type { OutboxWaker, RouteDeps } from './http/deps.js';
 import { createPatchRunner } from './http/patch-runner.js';
 import { registerCatalogRoutes } from './routes/catalog.js';
 import { registerFinanceRoutes } from './routes/finance.js';
@@ -25,7 +25,12 @@ import { registerReconciliationRoutes } from './routes/reconciliation.js';
  * `payments` -> `retention_ledger`) consistente. Separar o arquivo por contexto custa uma linha por
  * modulo e deixa cada rota perto das vizinhas que compartilham invariantes.
  */
-export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
+export interface BuildAppOptions {
+  /** `wake()` do laco da fila; `server.ts` preenche depois de subir o worker. */
+  outbox?: OutboxWaker;
+}
+
+export function buildApp(config: AppConfig, pool?: Pool, options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: { level: config.LOG_LEVEL }, genReqId: () => randomUUID() });
   app.register(helmet);
   app.register(cors, { origin: config.corsOrigins, credentials: true });
@@ -35,7 +40,12 @@ export function buildApp(config: AppConfig, pool?: Pool): FastifyInstance {
     reply.header('x-correlation-id', request.id);
   });
 
-  const deps: RouteDeps = { pool, config, patchRunner: createPatchRunner(pool) };
+  const deps: RouteDeps = {
+    pool,
+    config,
+    patchRunner: createPatchRunner(pool),
+    ...(options.outbox === undefined ? {} : { outbox: options.outbox })
+  };
   registerOpsRoutes(app, deps);
   registerCatalogRoutes(app, deps);
   registerFinanceRoutes(app, deps);

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ASAAS_DESCRIPTION_MAX_LENGTH,
   OUTBOX_TOPICS,
   OutboxPayloadError,
   ProviderError,
   attemptsExhausted,
   chargeDedupeKey,
+  chargeDescription,
   classifyFailure,
+  customerCreatePayload,
   customerDedupeKey,
   isOutboxTopic,
   retryDelaySeconds
@@ -139,5 +142,44 @@ describe('topics', () => {
     expect(OUTBOX_TOPICS.every(isOutboxTopic)).toBe(true);
     expect(isOutboxTopic('asaas.charge.cancel')).toBe(false);
     expect(isOutboxTopic(undefined)).toBe(false);
+  });
+});
+
+describe('payload do produtor', () => {
+  const customer = {
+    customerId: '5f1a3c47-2d8e-4a1b-9c6f-7d2e4b8a1c33',
+    fullName: '  Maria da Silva  ',
+    documentNumber: null,
+    email: null,
+    phone: null
+  };
+
+  it('omite campo vazio em vez de mandar string vazia ao provedor', () => {
+    expect(
+      customerCreatePayload({ ...customer, documentNumber: '', email: '   ', phone: '' })
+    ).toEqual({ customerId: customer.customerId, name: 'Maria da Silva' });
+  });
+
+  it('mantem documento com pontuacao e descarta documento curto demais', () => {
+    expect(customerCreatePayload({ ...customer, documentNumber: '123.456.789-00' }).documentNumber).toBe(
+      '123.456.789-00'
+    );
+    expect(customerCreatePayload({ ...customer, documentNumber: '123' })).not.toHaveProperty('documentNumber');
+  });
+
+  it('normaliza espacos do nome e dos contatos', () => {
+    expect(
+      customerCreatePayload({ ...customer, email: ' maria@example.com ', phone: ' 11999998888 ' })
+    ).toMatchObject({ name: 'Maria da Silva', email: 'maria@example.com', phone: '11999998888' });
+  });
+
+  it('descreve a parcela com o acordo e trunca no limite do Asaas', () => {
+    expect(chargeDescription({ installmentNumber: 2, installmentsCount: 12, reference: null })).toBe('Parcela 2/12');
+    expect(
+      chargeDescription({ installmentNumber: 2, installmentsCount: 12, reference: '  Matricula 2026  ' })
+    ).toBe('Parcela 2/12 - Matricula 2026');
+    expect(
+      chargeDescription({ installmentNumber: 1, installmentsCount: 1, reference: 'x'.repeat(600) })
+    ).toHaveLength(ASAAS_DESCRIPTION_MAX_LENGTH);
   });
 });

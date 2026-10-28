@@ -8,7 +8,7 @@ import { hashPassword } from '../auth/password.js';
 import { loadConfig } from '../config.js';
 import { claimOutboxBatch, enqueueOutbox, markOutboxDead, releaseExpiredLeases } from '../db/outbox.js';
 import { applyMigrations } from '../db/run-migrations.js';
-import { ProviderError, chargeDedupeKey } from '../domain/outbox.js';
+import { ProviderError, chargeDedupeKey, customerDedupeKey } from '../domain/outbox.js';
 import type { AsaasCharge, AsaasClient } from '../integrations/asaas-client.js';
 import { runOutboxCycle, type OutboxSettings } from './worker.js';
 
@@ -186,6 +186,38 @@ describeWithDatabase('integracao: outbox + worker em processo', () => {
     const row = await pool.query<{ id: string }>('SELECT id FROM outbox_events WHERE dedupe_key = $1', [dedupeKey]);
     return String(row.rows[0]?.id);
   };
+
+  /** Mesma cadeia, mas sem `asaas_customers`: cenario de cliente ainda nao sincronizado. */
+  const createUnsyncedFixtures = async (): Promise<{ customerId: string; installmentId: string }> => {
+    const suffix = randomUUID().slice(0, 8);
+    const school = await pool.query<{ id: string }>('INSERT INTO schools (legal_name) VALUES ($1) RETURNING id', [
+      `Escola ${suffix}`
+    ]);
+    const customer = await pool.query<{ id: string }>(
+      `INSERT INTO customers (full_name, document_number, email) VALUES ($1, $2, $3) RETURNING id`,
+      [`Cliente ${suffix}`, '123.456.789-00', `responsavel-${suffix}@example.com`]
+    );
+    const agreement = await pool.query<{ id: string }>(
+      `INSERT INTO agreements (school_id, customer_id, reference, total_amount, installments_count)
+       VALUES ($1, $2, $3, 150.50, 1) RETURNING id`,
+      [school.rows[0]?.id, customer.rows[0]?.id, `Matricula ${suffix}`]
+    );
+    const installment = await pool.query<{ id: string }>(
+      `INSERT INTO installments (agreement_id, installment_number, due_date, original_amount)
+       VALUES ($1, 1, '2026-11-10', 150.50) RETURNING id`,
+      [agreement.rows[0]?.id]
+    );
+    return { customerId: String(customer.rows[0]?.id), installmentId: String(installment.rows[0]?.id) };
+  };
+
+  /** Linhas da fila com uma `dedupe_key`: o teste nao depende do resto da tabela. */
+  const rowsForKey = async (key: string) =>
+    (
+      await pool.query<{ id: string; status: string; payload: Record<string, unknown> }>(
+        'SELECT id, status, payload FROM outbox_events WHERE dedupe_key = $1',
+        [key]
+      )
+    ).rows;
 
   /** Move o relogio do backoff sem dormir: a linha vira "pronta" para o proximo ciclo. */
   const releaseClock = async (id: string): Promise<void> => {
@@ -482,6 +514,139 @@ describeWithDatabase('integracao: outbox + worker em processo', () => {
     );
     expect(audited.rowCount).toBe(1);
     expect(audited.rows[0]?.metadata.previousError).toBe('400: invalid value');
+  });
+
+  it('POST /customers/:id/asaas enfileira uma vez e o worker grava o cliente', async () => {
+    await drainQueue();
+    const fixtures = await createUnsyncedFixtures();
+    const admin = await tokenOf('admin@example.com');
+    const headers = { authorization: `Bearer ${admin}` };
+    const key = customerDedupeKey(fixtures.customerId);
+
+    const first = await app.inject({ method: 'POST', url: `/api/v1/customers/${fixtures.customerId}/asaas`, headers });
+    expect(first.statusCode).toBe(202);
+    expect(first.json()).toMatchObject({ queued: true, dedupeKey: key });
+
+    const repeated = await app.inject({ method: 'POST', url: `/api/v1/customers/${fixtures.customerId}/asaas`, headers });
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toMatchObject({ queued: false, dedupeKey: key });
+
+    const queuedRows = await rowsForKey(key);
+    expect(queuedRows).toHaveLength(1);
+    expect(queuedRows[0]?.payload).toMatchObject({
+      customerId: fixtures.customerId,
+      documentNumber: '123.456.789-00'
+    });
+    expect(String(queuedRows[0]?.payload.name)).toContain('Cliente');
+
+    expect((await cycle()).done).toBe(1);
+    const stored = await pool.query<{ externalId: string }>(
+      'SELECT external_id AS "externalId" FROM asaas_customers WHERE customer_id = $1',
+      [fixtures.customerId]
+    );
+    expect(stored.rows[0]?.externalId).toMatch(/^cus_/);
+
+    // Ja sincronizado: 200 com `synced: true`, sem linha nova na fila.
+    const already = await app.inject({ method: 'POST', url: `/api/v1/customers/${fixtures.customerId}/asaas`, headers });
+    expect(already.statusCode).toBe(200);
+    expect(already.json()).toMatchObject({ queued: false, synced: true });
+    expect(await rowsForKey(key)).toHaveLength(1);
+
+    const missing = await app.inject({ method: 'POST', url: `/api/v1/customers/${randomUUID()}/asaas`, headers });
+    expect(missing.statusCode).toBe(404);
+    const invalid = await app.inject({ method: 'POST', url: '/api/v1/customers/nao-e-uuid/asaas', headers });
+    expect(invalid.statusCode).toBe(400);
+
+    const viewer = await tokenOf('viewer@example.com');
+    const forbidden = await app.inject({
+      method: 'POST',
+      url: `/api/v1/customers/${fixtures.customerId}/asaas`,
+      headers: { authorization: `Bearer ${viewer}` }
+    });
+    expect(forbidden.statusCode).toBe(403);
+  });
+
+  it('POST /installments/:id/charge exige cliente sincronizado e cobra uma unica vez', async () => {
+    await drainQueue();
+    const fixtures = await createUnsyncedFixtures();
+    const admin = await tokenOf('admin@example.com');
+    const headers = { authorization: `Bearer ${admin}` };
+    const chargeKey = chargeDedupeKey(fixtures.installmentId);
+
+    // Cobrar sem o cliente no Asaas cobraria um id que o provedor nao conhece: recusa antes de fila.
+    const blocked = await app.inject({
+      method: 'POST',
+      url: `/api/v1/installments/${fixtures.installmentId}/charge`,
+      headers
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: 'CUSTOMER_NOT_SYNCED' });
+    expect(await rowsForKey(chargeKey)).toHaveLength(0);
+
+    // Cliente sincronizado direto na tabela: a rota de sincronizacao tem teste proprio acima.
+    await pool.query(`INSERT INTO asaas_customers (customer_id, external_id, environment) VALUES ($1, $2, 'sandbox')`, [
+      fixtures.customerId,
+      `cus_${randomUUID().slice(0, 8)}`
+    ]);
+
+    const created = await app.inject({
+      method: 'POST',
+      url: `/api/v1/installments/${fixtures.installmentId}/charge`,
+      headers,
+      payload: {}
+    });
+    expect(created.statusCode).toBe(202);
+    expect(created.json()).toMatchObject({ queued: true, dedupeKey: chargeKey });
+
+    const rows = await rowsForKey(chargeKey);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toMatchObject({
+      installmentId: fixtures.installmentId,
+      billingType: 'UNDEFINED',
+      value: 150.5,
+      dueDate: '2026-11-10'
+    });
+    expect(String(rows[0]?.payload.description)).toContain('Parcela 1/1');
+
+    // Segundo POST (com outro `billingType`) nao cria segunda cobranca nem muda o snapshot.
+    const repeated = await app.inject({
+      method: 'POST',
+      url: `/api/v1/installments/${fixtures.installmentId}/charge`,
+      headers,
+      payload: { billingType: 'PIX' }
+    });
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toMatchObject({ queued: false, dedupeKey: chargeKey });
+    expect(await rowsForKey(chargeKey)).toHaveLength(1);
+
+    expect((await cycle()).done).toBe(1);
+    const charge = await pool.query<{ externalId: string }>(
+      'SELECT external_id AS "externalId" FROM asaas_charges WHERE installment_id = $1',
+      [fixtures.installmentId]
+    );
+    expect(charge.rows[0]?.externalId).toMatch(/^pay_/);
+
+    // Parcela ja paga nao e cobravel; o 409 diz o estado em vez de enfileirar uma cobranca inutil.
+    await pool.query(`UPDATE installments SET status = 'paid' WHERE id = $1`, [fixtures.installmentId]);
+    const notBillable = await app.inject({
+      method: 'POST',
+      url: `/api/v1/installments/${fixtures.installmentId}/charge`,
+      headers
+    });
+    expect(notBillable.statusCode).toBe(409);
+    expect(notBillable.json()).toMatchObject({ code: 'INSTALLMENT_NOT_BILLABLE', message: 'Installment is paid' });
+
+    const missing = await app.inject({ method: 'POST', url: `/api/v1/installments/${randomUUID()}/charge`, headers });
+    expect(missing.statusCode).toBe(404);
+    const invalid = await app.inject({ method: 'POST', url: '/api/v1/installments/nao-e-uuid/charge', headers });
+    expect(invalid.statusCode).toBe(400);
+
+    const audited = await pool.query(
+      `SELECT metadata FROM audit_logs WHERE action = 'installment.charge_requested' AND entity_id = $1`,
+      [fixtures.installmentId]
+    );
+    expect(audited.rowCount).toBe(1);
+    expect(audited.rows[0]?.metadata).toMatchObject({ dedupeKey: chargeKey, billingType: 'UNDEFINED' });
   });
 
   /**

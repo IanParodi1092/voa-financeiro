@@ -3,6 +3,7 @@ import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createPool } from './db/pool.js';
 import { createAsaasClient } from './integrations/asaas-client.js';
+import type { OutboxWaker } from './http/deps.js';
 import { startOutboxWorker } from './outbox/worker.js';
 
 /**
@@ -15,7 +16,13 @@ import { startOutboxWorker } from './outbox/worker.js';
 
 const config = loadConfig();
 const pool = createPool(config);
-const app = buildApp(config, pool);
+/**
+ * Referencia mutavel para o `wake` do laco: as rotas sao registradas antes de o worker existir, e
+ * quem enfileira chama `wake()` depois do `COMMIT` para a cobranca sair em milissegundos em vez de
+ * esperar o proximo poll. Se o `wake` nunca for trocado, o no-op mantem tudo funcionando.
+ */
+const outboxWaker: OutboxWaker = { wake: () => {} };
+const app = buildApp(config, pool, { outbox: outboxWaker });
 
 const asaas = config.ASAAS_API_KEY
   ? createAsaasClient({ baseUrl: config.ASAAS_API_URL, apiKey: config.ASAAS_API_KEY })
@@ -34,6 +41,7 @@ const outbox = startOutboxWorker({
     retentionDays: config.OUTBOX_RETENTION_DAYS
   }
 });
+outboxWaker.wake = () => outbox.wake();
 
 try {
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
