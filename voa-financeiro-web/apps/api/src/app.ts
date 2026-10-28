@@ -6,7 +6,7 @@ import jwt from '@fastify/jwt';
 import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
-import type { OutboxWaker, RouteDeps } from './http/deps.js';
+import type { RouteDeps, Waker } from './http/deps.js';
 import { createPatchRunner } from './http/patch-runner.js';
 import { registerCatalogRoutes } from './routes/catalog.js';
 import { registerFinanceRoutes } from './routes/finance.js';
@@ -26,8 +26,10 @@ import { registerReconciliationRoutes } from './routes/reconciliation.js';
  * modulo e deixa cada rota perto das vizinhas que compartilham invariantes.
  */
 export interface BuildAppOptions {
-  /** `wake()` do laco da fila; `server.ts` preenche depois de subir o worker. */
-  outbox?: OutboxWaker;
+  /** `wake()` da fila de saida; `server.ts` preenche depois de subir o worker. */
+  outbox?: Waker;
+  /** `wake()` do consumidor de `asaas_events`; o webhook chama depois do `INSERT`. */
+  asaasEvents?: Waker;
 }
 
 export function buildApp(config: AppConfig, pool?: Pool, options: BuildAppOptions = {}): FastifyInstance {
@@ -44,7 +46,8 @@ export function buildApp(config: AppConfig, pool?: Pool, options: BuildAppOption
     pool,
     config,
     patchRunner: createPatchRunner(pool),
-    ...(options.outbox === undefined ? {} : { outbox: options.outbox })
+    ...(options.outbox === undefined ? {} : { outbox: options.outbox }),
+    ...(options.asaasEvents === undefined ? {} : { asaasEvents: options.asaasEvents })
   };
   registerOpsRoutes(app, deps);
   registerCatalogRoutes(app, deps);

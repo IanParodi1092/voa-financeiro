@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { recordAudit } from '../audit.js';
+import { asaasEventsSummary, retryFailedAsaasEvent } from '../db/asaas-events.js';
 import { outboxSummary, retryDeadMessage } from '../db/outbox.js';
 import type { RouteDeps } from '../http/deps.js';
 import { actorIdOf, requireAuthentication, requirePermission } from '../http/guards.js';
@@ -10,10 +11,11 @@ import { actorIdOf, requireAuthentication, requirePermission } from '../http/gua
  * de saida.
  *
  * Nao tocam regra de negocio. O webhook so grava o evento cru em `asaas_events` e responde 202; os
- * dois endpoints de `outbox` leem o estado da fila e reabrem uma linha morta, nada mais.
+ * endpoints de `ops` leem o estado das duas filas (saida e entrada) e reabrem uma linha morta, nada
+ * mais. Aplicar o evento e trabalho do laco em `outbox/events.ts`.
  */
 
-const outboxIdSchema = z.string().uuid();
+const idParamSchema = z.string().uuid();
 
 export function registerOpsRoutes(app: FastifyInstance, deps: RouteDeps): void {
   const { pool, config } = deps;
@@ -45,6 +47,8 @@ export function registerOpsRoutes(app: FastifyInstance, deps: RouteDeps): void {
       VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (external_event_id) DO NOTHING
       RETURNING id`, [eventId, config.ASAAS_ENVIRONMENT, eventType, externalChargeId, payload]);
+    // Evento novo acorda o consumidor agora; o poll pegaria de qualquer forma, so que ate 2s depois.
+    if (result.rowCount !== 0) deps.asaasEvents?.wake();
     return reply.code(202).send({ accepted: true, duplicate: result.rowCount === 0 });
   });
 
@@ -66,7 +70,7 @@ export function registerOpsRoutes(app: FastifyInstance, deps: RouteDeps): void {
    * depender do laco estar na mesma instancia.
    */
   app.post('/api/v1/ops/outbox/:id/retry', { preHandler: requirePermission('audit') }, async (request, reply) => {
-    const parsedId = outboxIdSchema.safeParse((request.params as { id?: string }).id);
+    const parsedId = idParamSchema.safeParse((request.params as { id?: string }).id);
     if (!parsedId.success) {
       return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid outbox id', correlationId: request.id });
     }
@@ -95,5 +99,57 @@ export function registerOpsRoutes(app: FastifyInstance, deps: RouteDeps): void {
       }
     });
     return { id: parsedId.data, status: 'pending', attempts: 0, dedupeKey: outcome.dedupeKey };
+  });
+
+  /**
+   * Fila de entrada. Mesmo raciocinio do `/ops/outbox`, mas o alarme pesa mais: o provedor descarta o
+   * evento depois de 14 dias e pausa a entrega depois de 15 falhas consecutivas, entao
+   * `oldestPendingAgeSeconds` alto aqui e evento que vai deixar de existir do outro lado.
+   */
+  app.get('/api/v1/ops/asaas-events', { preHandler: requireAuthentication }, async (request, reply) => {
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    return asaasEventsSummary(pool, { failedLimit: 10 });
+  });
+
+  /**
+   * Reabre um evento `failed_at`: `attempts = 0` e `failed_at = NULL`. So evento morto entra - em
+   * `pending` ou processado o 409 (`ASAAS_EVENT_NOT_FAILED`) evita aplicar o mesmo evento duas vezes
+   * em paralelo com o laco.
+   */
+  app.post('/api/v1/ops/asaas-events/:id/retry', { preHandler: requirePermission('audit') }, async (request, reply) => {
+    const parsedId = idParamSchema.safeParse((request.params as { id?: string }).id);
+    if (!parsedId.success) {
+      return reply.code(400).send({ code: 'INVALID_REQUEST', message: 'Invalid asaas event id', correlationId: request.id });
+    }
+    if (!pool) return reply.code(503).send({ code: 'DATABASE_UNAVAILABLE', message: 'Database is temporarily unavailable', correlationId: request.id });
+    const outcome = await retryFailedAsaasEvent(pool, parsedId.data);
+    if (outcome.status === 'not_found') {
+      return reply.code(404).send({ code: 'NOT_FOUND', message: 'Asaas event not found', correlationId: request.id });
+    }
+    if (outcome.status === 'not_failed') {
+      return reply.code(409).send({
+        code: 'ASAAS_EVENT_NOT_FAILED',
+        message: `Asaas event is ${outcome.currentStatus}`,
+        correlationId: request.id
+      });
+    }
+    await recordAudit(pool, request.log, request.id, {
+      action: 'asaas_event.retried',
+      actorId: actorIdOf(request),
+      entityType: 'asaas_events',
+      entityId: parsedId.data,
+      metadata: {
+        externalEventId: outcome.externalEventId,
+        eventType: outcome.eventType,
+        previousError: outcome.previousError
+      }
+    });
+    return {
+      id: parsedId.data,
+      status: 'pending',
+      attempts: 0,
+      externalEventId: outcome.externalEventId,
+      eventType: outcome.eventType
+    };
   });
 }

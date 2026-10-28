@@ -46,7 +46,10 @@ garantida, a regra continua correta - so deixa de ser exercitada.
 
 `payments` continua sendo **um lancamento por cobranca do provedor**: `source = 'asaas'`,
 `external_id = payment.id`, `amount = payment.value`, `paid_at` do payload. Reaplicar o mesmo evento
-faz `ON CONFLICT (external_id) DO UPDATE`, nunca um segundo lancamento.
+faz `ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO UPDATE`, nunca um segundo
+lancamento - e essa chave ja existe desde a `0004` (`payments_external_idx`), nao precisa de indice
+novo. `amount <= 0` nao vira lancamento (`CHECK (amount > 0)`): a parcela e atualizada e o motivo vai
+para o log e o `audit_logs`.
 
 ## 3. Tabela evento -> estado
 
@@ -138,7 +141,7 @@ tentou" de "tentou 5 vezes".
 |---|---|---|
 | `asaas_events.attempts int NOT NULL DEFAULT 0` | teto do `WEBHOOK_RETRY_LIMIT` por evento | nenhum (default cobre as linhas existentes) |
 | `asaas_events.last_attempt_at timestamptz` | separar "preso" de "esperando", igual a `locked_at` do outbox | nenhum |
-| `UNIQUE` parcial `payments (external_id) WHERE source = 'asaas' AND external_id IS NOT NULL` | o `ON CONFLICT (external_id)` do consumidor exige a chave; restringir a `source = 'asaas'` evita colidir com `external_id` repetido da carga legada | verificar duplicados antes de aplicar |
+| `UNIQUE` parcial `payments (external_id) WHERE source = 'asaas' AND external_id IS NOT NULL` | ~~o `ON CONFLICT (external_id)` do consumidor exige a chave~~ **descartado**: `payments_external_idx` (`UNIQUE (source, external_id) WHERE external_id IS NOT NULL`, `0004`) ja existe, e o `ON CONFLICT` do consumidor usa essa chave. Um indice parcial em `(external_id)` seria redundante e quebraria a inferencia (o predicado dado nao implica `external_id IS NOT NULL`) | nenhum - nao entrou na `0014` |
 | `UNIQUE` parcial `retention_ledger (payment_id, entry_type) WHERE payment_id IS NOT NULL` | trava do item 4 | idem: `SELECT payment_id, entry_type, count(*) ... GROUP BY 1,2 HAVING count(*) > 1` |
 | (se opcao 1 da secao 5) `schools.retention_percentage numeric(5,4) CHECK (0..1)` + `PATCH /schools/:id` | fonte canonica do percentual para pagamento novo | decisao de negocio ainda aberta |
 
@@ -158,9 +161,10 @@ SELECT 'retention_ledger', count(*) FROM (
 ) d;
 ```
 
-Rodado em `voa_staging` em 2026-10-27: **0 duplicados** nas duas tabelas, `payments` com
-`source = 'asaas'` ainda em `0` linhas (a carga legada usa outra fonte) e `asaas_events` vazia. Ou
-seja, os dois indices unicos parciais entram sem backfill nem correcao de dado.
+Rodado em `voa_staging` em 2026-10-27: **0 duplicados** em `retention_ledger`, `payments` com
+`source = 'asaas'` ainda em `0` linhas (a carga legada usa outra fonte) e `asaas_events` vazia. O
+indice do ledger entra sem backfill nem correcao de dado; `payments` dispensa indice novo pela
+`payments_external_idx`.
 
 ## 7. Operacao
 
@@ -213,8 +217,8 @@ o fake nem e usado, o evento ja chega completo):
 
 ## 9. Ordem de implementacao e pendencias
 
-1. `0014_asaas_events_consumer.sql` (contador + indices unicos parciais) com o pre-flight da secao 6
-   rodado antes em `voa_staging`;
+1. `0014_asaas_events_consumer.sql` (contador/lease + indice unico do ledger) com o pre-flight da
+   secao 6 rodado antes em `voa_staging`;
 2. `domain/asaas-events.ts` (mapa puro) + testes unitarios - nada toca banco;
 3. `db/asaas-events.ts` (claim/done/fail/resumo/retry) espelhando `db/outbox.ts`;
 4. `outbox/events.ts` (handler) **sem** ledger, com `RETENTION_LEDGER_ENABLED=false` de default;

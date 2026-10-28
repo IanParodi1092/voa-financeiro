@@ -38,7 +38,12 @@ const environmentSchema = z.object({
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
   OUTBOX_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
   /** Dias de historico de `done` na fila; `0` desliga o expurgo (`docs/OUTBOX_DESIGN.md` secao 15). */
-  OUTBOX_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(90)
+  OUTBOX_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(90),
+  /** Consumidor de `asaas_events` (`docs/ASAAS_EVENT_RULES.md`). */
+  ASAAS_EVENTS_WORKER_ENABLED: booleanish(true),
+  ASAAS_EVENT_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(10),
+  /** Lease do evento: `last_attempt_at` mais velho que isto pode ser pego de novo. */
+  ASAAS_EVENT_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000)
 });
 
 export interface RefreshCookieConfig {

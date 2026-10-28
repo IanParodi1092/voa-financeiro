@@ -30,6 +30,8 @@ O codigo da API separa as rotas por contexto, um arquivo por grupo: `routes/ops.
 - `POST /api/v1/webhooks/asaas` (exige o token `ASAAS_WEBHOOK_TOKEN`)
 - `GET /api/v1/ops/outbox` (`read`) e `POST /api/v1/ops/outbox/:id/retry` (`audit`) - operacao da fila
   de saida do Asaas (ver a secao propria)
+- `GET /api/v1/ops/asaas-events` (`read`) e `POST /api/v1/ops/asaas-events/:id/retry` (`audit`) -
+  operacao da fila de entrada do Asaas (ver a secao propria)
 
 ## Contrato dos `PATCH`
 
@@ -243,6 +245,37 @@ efeito colateral de criar parcela nem de importar o legado.
 
 Sem `ASAAS_API_KEY` a API sobe, o worker fica idle e as linhas ficam `pending`. Reenviar uma cobranca
 que morreu em `dead` e sempre `POST /api/v1/ops/outbox/:id/retry`, nunca um segundo `/charge`.
+
+## Fila de entrada (`asaas_events`)
+
+O caminho de **entrada** e o inverso: o Asaas chama `POST /api/v1/webhooks/asaas`, a rota grava o
+payload cru em `asaas_events` e responde `202`; um segundo laco no mesmo processo aplica o evento em
+`installments.status`, `payments` e `asaas_charges.status`. A regra evento -> estado, o que vira
+`stale`/`ignored`/`orphan` e o desenho do ledger de retencao estao em `docs/ASAAS_EVENT_RULES.md`; o
+que a operacao precisa saber:
+
+- `GET /api/v1/ops/asaas-events` (`read`) - `counts` (`pending`, `processed`, `failed`),
+  `oldestPendingAgeSeconds` e as 10 linhas `failed` mais recentes (`id`, `eventType`,
+  `externalChargeId`, `attempts`, `failureReason`, `createdAt`). Pendente velho e o sinal de alarme:
+  significa consumidor parado, e o provedor descarta o evento depois de 14 dias;
+- `POST /api/v1/ops/asaas-events/:id/retry` (`audit`, hoje so `admin`) - reabre **somente** linha
+  `failed_at IS NOT NULL` (`attempts = 0`, `failed_at` e `failure_reason` limpos) e audita
+  `asaas_event.retried` com o `previousError`.
+
+| Situacao | Status | `code` |
+|---|---|---|
+| id fora do formato uuid | 400 | `INVALID_REQUEST` |
+| evento inexistente | 404 | `NOT_FOUND` |
+| evento em `pending` ou ja processado | 409 | `ASAAS_EVENT_NOT_FAILED` |
+| banco indisponivel | 503 | `DATABASE_UNAVAILABLE` |
+
+Reaplicar o evento e idempotente por construcao - o estado e absoluto, nao incremental: `payments` e
+gravado com `ON CONFLICT (source, external_id)`, e um `eventType` cujo estado de origem ja nao bate
+vira `stale` (no-op auditado) em vez de reabrir uma parcela estornada. `attempts >=
+WEBHOOK_RETRY_LIMIT` carimba `failed_at`; sem `ASAAS_EVENTS_WORKER_ENABLED=true` o webhook continua
+gravando e a fila so cresce, o que aparece no `oldestPendingAgeSeconds`. O lancamento em
+`retention_ledger` fica atras de `RETENTION_LEDGER_ENABLED` (default `false`) ate a fonte do
+percentual ser decidida.
 
 ## Permissoes (RBAC)
 

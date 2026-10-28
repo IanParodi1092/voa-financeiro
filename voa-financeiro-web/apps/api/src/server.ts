@@ -3,7 +3,8 @@ import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createPool } from './db/pool.js';
 import { createAsaasClient } from './integrations/asaas-client.js';
-import type { OutboxWaker } from './http/deps.js';
+import type { Waker } from './http/deps.js';
+import { startAsaasEventsWorker } from './outbox/events.js';
 import { startOutboxWorker } from './outbox/worker.js';
 
 /**
@@ -17,12 +18,14 @@ import { startOutboxWorker } from './outbox/worker.js';
 const config = loadConfig();
 const pool = createPool(config);
 /**
- * Referencia mutavel para o `wake` do laco: as rotas sao registradas antes de o worker existir, e
- * quem enfileira chama `wake()` depois do `COMMIT` para a cobranca sair em milissegundos em vez de
- * esperar o proximo poll. Se o `wake` nunca for trocado, o no-op mantem tudo funcionando.
+ * Referencias mutaveis para o `wake` dos lacos: as rotas sao registradas antes de os workers
+ * existirem, e quem enfileira (ou recebe um webhook) chama `wake()` depois do `COMMIT`/`INSERT` para
+ * o trabalho sair em milissegundos em vez de esperar o proximo poll. Se nunca forem trocadas, o no-op
+ * mantem tudo funcionando.
  */
-const outboxWaker: OutboxWaker = { wake: () => {} };
-const app = buildApp(config, pool, { outbox: outboxWaker });
+const outboxWaker: Waker = { wake: () => {} };
+const asaasEventsWaker: Waker = { wake: () => {} };
+const app = buildApp(config, pool, { outbox: outboxWaker, asaasEvents: asaasEventsWaker });
 
 const asaas = config.ASAAS_API_KEY
   ? createAsaasClient({ baseUrl: config.ASAAS_API_URL, apiKey: config.ASAAS_API_KEY })
@@ -43,11 +46,30 @@ const outbox = startOutboxWorker({
 });
 outboxWaker.wake = () => outbox.wake();
 
+/**
+ * Consumidor de `asaas_events`. Nao depende de chave do Asaas (o evento chega pelo webhook) e usa a
+ * mesma cadencia de poll do outbox: um processo, um relogio. O teto de tentativas e o
+ * `WEBHOOK_RETRY_LIMIT`, que existia no config desde antes e nao tinha consumidor.
+ */
+const asaasEvents = startAsaasEventsWorker({
+  pool,
+  logger: app.log,
+  enabled: config.ASAAS_EVENTS_WORKER_ENABLED,
+  pollIntervalMs: config.OUTBOX_POLL_INTERVAL_MS,
+  settings: {
+    batchSize: config.ASAAS_EVENT_BATCH_SIZE,
+    leaseTimeoutMs: config.ASAAS_EVENT_LEASE_TIMEOUT_MS,
+    maxAttempts: config.WEBHOOK_RETRY_LIMIT
+  }
+});
+asaasEventsWaker.wake = () => asaasEvents.wake();
+
 try {
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
 } catch (error) {
   app.log.error(error);
   await outbox.stop({ timeoutMs: 0 });
+  await asaasEvents.stop({ timeoutMs: 0 });
   await pool.end();
   process.exit(1);
 }
@@ -64,6 +86,7 @@ const close = async () => {
   if (closing) return;
   closing = true;
   await outbox.stop({ timeoutMs: 10_000 });
+  await asaasEvents.stop({ timeoutMs: 10_000 });
   await app.close();
   await pool.end();
 };
