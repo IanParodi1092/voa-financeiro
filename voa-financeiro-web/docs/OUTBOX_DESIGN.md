@@ -266,6 +266,10 @@ lado do pagamento recebido: um webhook repetido nao cria dois pagamentos.
 
 ## 9. Entrada: consumir `asaas_events`
 
+A regra completa - tabela `evento -> estado`, o que e `stale`, desfechos, retencao e o schema que
+falta (`0014`) - esta em **`docs/ASAAS_EVENT_RULES.md`**, escrita antes do codigo. Esta secao guarda so
+o que pertence ao desenho da fila.
+
 O webhook ja deduplica por `external_event_id` no `INSERT ... ON CONFLICT DO NOTHING`
 (`apps/api/src/routes/ops.ts:36`), entao a tabela nao recebe o mesmo evento duas vezes. Falta o
 consumidor:
@@ -485,9 +489,12 @@ fala com o provedor e o worker. Resta o passo 8.
 3. **Granularidade do `CHECK` de `topic`** - **resolvido**: lista fechada mantida. Um topic novo
    custa uma migration (expand), o que forca revisao em vez de aceitar string arbitraria na fila que
    move dinheiro.
-4. **`retention_ledger`**: indice unico parcial em `(payment_id, entry_type)` ou checagem
-   `WHERE NOT EXISTS` no handler? O indice e mais forte, mas exige migration e pode conflitar com
-   mais de um lancamento legitimo para o mesmo pagamento.
+4. **`retention_ledger`** - **resolvido (2026-10-27)**: indice unico parcial
+   `(payment_id, entry_type) WHERE payment_id IS NOT NULL` **e** `WHERE NOT EXISTS` no handler (o
+   indice e a trava; o `NOT EXISTS` mantem o codigo correto antes da migration). Detalhes e o
+   pre-flight de duplicados em `docs/ASAAS_EVENT_RULES.md`, secao 6. Multiplos lancamentos legitimos
+   para o mesmo pagamento continuam possiveis porque `entry_type` faz parte da chave (`retention`,
+   `release`, `reversal`).
 5. **Idempotencia do Asaas** - **resolvido (2026-10-27)**: nao existe chave/header de idempotencia
    no POST de cobranca. A referencia de `POST /v3/payments` lista `customer`, `billingType`, `value`,
    `dueDate`, `description`, `externalReference`, `installmentCount`... e nenhum header de
@@ -548,7 +555,9 @@ Testes: 30 unitarios em `domain/outbox.test.ts` e 11 de integracao em
 O que falta:
 
 1. consumidor de `asaas_events` (secao 9): sem ele o webhook grava e ninguem aplica status - e o outro
-   lado do ciclo (a cobranca sai, o pagamento nao volta para `installments`/`payments`).
+   lado do ciclo (a cobranca sai, o pagamento nao volta para `installments`/`payments`). A regra esta
+   escrita em **`docs/ASAAS_EVENT_RULES.md`** (2026-10-27), pronta para virar codigo na ordem da secao
+   9 daquele documento; so a fonte do percentual de retencao continua aberta.
 
 Resolvidos desde o primeiro mapa: primeiro produtor decidido e implementado (secao 15, item 1),
 idempotencia do Asaas verificada na documentacao (item 5 - nao existe header; a recomendacao oficial e
