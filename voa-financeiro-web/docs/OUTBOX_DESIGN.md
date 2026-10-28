@@ -266,18 +266,18 @@ lado do pagamento recebido: um webhook repetido nao cria dois pagamentos.
 
 ## 9. Entrada: consumir `asaas_events`
 
-A regra completa - tabela `evento -> estado`, o que e `stale`, desfechos, retencao e o schema que
-falta (`0014`) - esta em **`docs/ASAAS_EVENT_RULES.md`**, escrita antes do codigo. Esta secao guarda so
-o que pertence ao desenho da fila.
+A regra completa - tabela `evento -> estado`, o que e `stale`, desfechos, retencao e o schema (`0014`) -
+esta em **`docs/ASAAS_EVENT_RULES.md`**, escrita antes do codigo. Esta secao guarda so o que pertence ao
+desenho da fila.
 
 O webhook ja deduplica por `external_event_id` no `INSERT ... ON CONFLICT DO NOTHING`
-(`apps/api/src/routes/ops.ts:36`), entao a tabela nao recebe o mesmo evento duas vezes. Falta o
-consumidor:
+(`apps/api/src/routes/ops.ts:36`), entao a tabela nao recebe o mesmo evento duas vezes. O consumidor
+(`apps/api/src/outbox/events.ts`) segue esta lista:
 
 - claim igual ao da secao 5, sobre `processed_at IS NULL AND failed_at IS NULL` (usa o indice
   parcial que ja existe);
-- `WEBHOOK_RETRY_LIMIT` (declarado em `apps/api/src/config.ts`, default 5, **sem consumidor hoje**)
-  vira o teto de tentativas; no teto grava `failed_at` + `failure_reason`;
+- `WEBHOOK_RETRY_LIMIT` (`apps/api/src/config.ts`, default 5) vira o teto de tentativas; no teto
+  grava `failed_at` + `failure_reason`;
 - handlers aplicam **estado**, nunca incrementam: `paid` chega uma vez e reaplica o mesmo
   resultado. Um crash entre "apliquei" e "marquei processado" reexecuta o evento, e isso precisa
   ser inofensivo;
@@ -444,8 +444,8 @@ falha do outro.
 
 ## 14. Sequencia de implementacao
 
-Cada passo e um commit verde (typecheck + `npm test` + `npm run test:integration`). Os passos 1-6
-estao feitos; o 7 e o 8 continuam pendentes por decisao de negocio (secao 15).
+Cada passo e um commit verde (typecheck + `npm test` + `npm run test:integration`). Os passos 1-9
+estao feitos; o que continua pendente e decisao de negocio, nao codigo (secao 15).
 
 1. **feito** - `apps/api/migrations/0012_outbox_events.sql`: DDL da secao 3. Nada le a tabela ainda.
 2. **feito** - `apps/api/src/domain/outbox.ts` + `domain/outbox.test.ts` (backoff, classificacao,
