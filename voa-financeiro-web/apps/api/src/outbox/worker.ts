@@ -6,6 +6,7 @@ import {
   claimOutboxBatch,
   markOutboxDead,
   markOutboxDone,
+  purgeDoneOutbox,
   releaseExpiredLeases,
   scheduleOutboxRetry,
   type ClaimedMessage
@@ -31,6 +32,8 @@ export interface OutboxSettings {
   pollIntervalMs: number;
   batchSize: number;
   leaseTimeoutMs: number;
+  /** Dias de historico de `done`. `0` desliga o expurgo; `dead` nunca e expurgada. */
+  retentionDays: number;
 }
 
 export interface OutboxWorkerDeps {
@@ -46,10 +49,18 @@ export interface OutboxCycleResult {
   released: number;
   /** Linhas que o reaper matou por ja terem gastado as tentativas. */
   expired: number;
+  /** Linhas `done` removidas pela retencao; `0` na maioria dos ciclos. */
+  purged: number;
   claimed: number;
   done: number;
   retried: number;
   dead: number;
+}
+
+/** O que o chamador pede do ciclo alem da configuracao fixa. */
+export interface OutboxCycleOptions {
+  /** Pede o expurgo de `done` antigos; o laco passa `true` uma vez por hora, nao a cada poll. */
+  purgeDone?: boolean;
 }
 
 const defaultWorkerId = (): string => `${hostname()}:${process.pid}`;
@@ -131,7 +142,8 @@ async function processMessage(
 /** Um ciclo completo. Exportado para o teste exercitar o laco sem esperar o timer. */
 export async function runOutboxCycle(
   deps: OutboxWorkerDeps,
-  settings: OutboxSettings
+  settings: OutboxSettings,
+  options: OutboxCycleOptions = {}
 ): Promise<OutboxCycleResult> {
   const { pool, logger } = deps;
   const reaped = await releaseExpiredLeases(pool, {
@@ -142,6 +154,17 @@ export async function runOutboxCycle(
     logger.warn({ released: reaped.released, expired: reaped.dead }, 'outbox leases recovered');
   }
 
+  let purged = 0;
+  if (options.purgeDone && settings.retentionDays > 0) {
+    try {
+      purged = (await purgeDoneOutbox(pool, { retentionDays: settings.retentionDays })).purged;
+      if (purged > 0) logger.info({ purged, retentionDays: settings.retentionDays }, 'outbox done rows purged');
+    } catch (error) {
+      // Retencao e higiene: se o DELETE falhar, as mensagens deste ciclo ainda precisam sair.
+      logger.error({ err: error }, 'outbox purge failed');
+    }
+  }
+
   const messages = await claimOutboxBatch(pool, {
     environment: settings.environment,
     limit: settings.batchSize,
@@ -150,6 +173,7 @@ export async function runOutboxCycle(
   const tally: OutboxCycleResult = {
     released: reaped.released,
     expired: reaped.dead,
+    purged,
     claimed: messages.length,
     done: 0,
     retried: 0,
@@ -184,6 +208,12 @@ const noopWorker = (logger: FastifyBaseLogger, message: string): OutboxWorker =>
 };
 
 /**
+ * Intervalo do expurgo de `done`. Uma hora: expurgar a cada poll (2s) faria um `DELETE` vazio por
+ * segundo, e uma vez por boot deixaria a tabela grande se a API ficar semanas no ar.
+ */
+const PURGE_INTERVAL_MS = 3_600_000;
+
+/**
  * Sobe o laco. Devolve sempre um `OutboxWorker`: quando nao ha o que fazer, um no-op que diz por que.
  *
  * O timer e `unref()`, para o laco nao segurar o processo sozinho: quem mantem a API viva e o
@@ -199,6 +229,8 @@ export function startOutboxWorker(options: OutboxWorkerOptions): OutboxWorker {
   let inFlight: Promise<void> | null = null;
   let stopped = false;
   let cycles = 0;
+  /** Primeiro expurgo ja no primeiro ciclo: o operador ve o efeito sem esperar uma hora. */
+  let nextPurgeAt = 0;
 
   const schedule = (delayMs: number): void => {
     if (stopped) return;
@@ -211,9 +243,15 @@ export function startOutboxWorker(options: OutboxWorkerOptions): OutboxWorker {
     timer = null;
     const cycle = (async () => {
       try {
-        const result = await runOutboxCycle({ pool, logger, asaas, ...(options.workerId === undefined ? {} : { workerId: options.workerId }) }, settings);
+        const purgeDone = Date.now() >= nextPurgeAt;
+        if (purgeDone) nextPurgeAt = Date.now() + PURGE_INTERVAL_MS;
+        const result = await runOutboxCycle(
+          { pool, logger, asaas, ...(options.workerId === undefined ? {} : { workerId: options.workerId }) },
+          settings,
+          { purgeDone }
+        );
         cycles += 1;
-        if (result.claimed > 0) logger.info({ ...result, cycle: cycles }, 'outbox cycle finished');
+        if (result.claimed > 0 || result.purged > 0) logger.info({ ...result, cycle: cycles }, 'outbox cycle finished');
       } catch (error) {
         // O ciclo nunca rejeita: uma promise rejeitada sem `catch` derruba o processo no Node 22.
         logger.error({ err: error }, 'outbox cycle failed');

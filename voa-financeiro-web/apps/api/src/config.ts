@@ -36,7 +36,9 @@ const environmentSchema = z.object({
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(5),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
-  OUTBOX_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000)
+  OUTBOX_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+  /** Dias de historico de `done` na fila; `0` desliga o expurgo (`docs/OUTBOX_DESIGN.md` secao 15). */
+  OUTBOX_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(90)
 });
 
 export interface RefreshCookieConfig {

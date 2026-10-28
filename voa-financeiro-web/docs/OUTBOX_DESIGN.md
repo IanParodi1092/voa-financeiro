@@ -360,6 +360,13 @@ Dois endpoints, ambos em `routes/ops.ts` (modulo de infraestrutura, sem regra de
 esta parcela nao tem cobranca?" olhando `GET /api/v1/audit-logs` (rota ja existente, permissao
 `audit`).
 
+Retencao: o laco chama `purgeDoneOutbox` uma vez por hora (`PURGE_INTERVAL_MS` em
+`outbox/worker.ts`, primeira chamada no primeiro ciclo) e apaga ate 1.000 linhas `done` por vez com
+`completed_at` mais antigo que `OUTBOX_RETENTION_DAYS`. A falha do `DELETE` vira log
+`outbox purge failed` e **nao** impede o envio das mensagens daquele ciclo; quando ha linha removida,
+o ciclo reporta `purged` junto de `claimed`/`done`/`retried`. O historico de uma mensagem concluida
+continua em `audit_logs` (`outbox.done`), que nao e expurgado por essa rotina.
+
 ## 12. Configuracao
 
 Adicoes ao `environmentSchema` de `apps/api/src/config.ts`, no mesmo estilo (`z.coerce.number`,
@@ -372,7 +379,8 @@ OUTBOX_WORKER_ENABLED: booleanish(true),
 OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(2_000),
 OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().max(50).default(5),
 OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
-OUTBOX_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000)
+OUTBOX_LEASE_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+OUTBOX_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(90)
 ```
 
 `ASAAS_API_KEY` e opcional pelo mesmo motivo que `ASAAS_WEBHOOK_TOKEN` ja e: sem ela a API sobe e o
@@ -407,6 +415,8 @@ worker registra `asaas client not configured` e nao pega nada. Webhook e worker 
 8. `GET /api/v1/ops/outbox` (resumo, 401 sem token) e `POST .../:id/retry`: `dead` -> 200 e `pending`
    com `attempts = 0`, `pending` -> 409, uuid inexistente -> 404, id invalido -> 400 antes de tocar o
    banco, `viewer` -> 403, e `audit_logs` guardando o `previousError`.
+9. expurgo: `done` com `completed_at` mais antigo que a retencao sai, `done` recente / `pending` /
+   `dead` ficam, e o ciclo sem `purgeDone` nao apaga nada (expurgo nao e efeito colateral do poll).
 
 O `AsaasClient` e uma interface injetada; **nenhum teste toca a rede**. O fake (`FakeAsaasClient`) mora
 no proprio arquivo de teste e agenda falha por `externalReference` - assim um cenario nao consome a
@@ -436,8 +446,12 @@ estao feitos; o 7 e o 8 continuam pendentes por decisao de negocio (secao 15).
    `apps/api/src/outbox/outbox.integration.test.ts`; `docs/API_ROUTES.md` ganhou as duas rotas.
 7. Produtor: `POST /api/v1/installments` passa a abrir transacao e enfileirar (secao 15, item 1).
 8. `apps/api/src/outbox/events.ts`: consumidor de `asaas_events` (secao 9, secao 15, item 4).
+9. **feito** - retencao: `purgeDoneOutbox` (`db/outbox.ts`), `0013_outbox_retention.sql`,
+   `OUTBOX_RETENTION_DAYS` e o expurgo horario no laco (secao 15, item 6). Saiu antes do passo 7
+   porque nao depende da decisao de negocio.
 
-Os passos 1-6 nao dependem de chave do Asaas; o 7 depende de decisao de negocio (secao 15, item 1).
+Os passos 1-6 e 9 nao dependem de chave do Asaas; o 7 depende de decisao de negocio (secao 15,
+item 1).
 
 ## 15. Decisoes pendentes (bloqueiam a implementacao, nao o desenho)
 
@@ -452,12 +466,23 @@ Os passos 1-6 nao dependem de chave do Asaas; o 7 depende de decisao de negocio 
 4. **`retention_ledger`**: indice unico parcial em `(payment_id, entry_type)` ou checagem
    `WHERE NOT EXISTS` no handler? O indice e mais forte, mas exige migration e pode conflitar com
    mais de um lancamento legitimo para o mesmo pagamento.
-5. **Idempotencia do Asaas**: existe chave/header documentado para POST de cobranca? Se existir, a
-   secao 8 fica mais simples e a conciliacao vira so rede de seguranca.
-6. **Retencao da fila**: por quanto tempo guardar linhas `done`? Sem regra, `outbox_events` cresce
-   com o volume de parcelas para sempre. Proposta: `DELETE` de `done` com `completed_at` mais
-   antigo que 90 dias, num passo do proprio laco (particao mensal so se o volume justificar).
-   **Aberto**: nenhum expurgo existe no codigo hoje.
+5. **Idempotencia do Asaas** - **resolvido (2026-10-27)**: nao existe chave/header de idempotencia
+   no POST de cobranca. A referencia de `POST /v3/payments` lista `customer`, `billingType`, `value`,
+   `dueDate`, `description`, `externalReference`, `installmentCount`... e nenhum header de
+   idempotencia; a pagina "Cobranca duplicada apos retry sem idempotencia"
+   (`https://docs.asaas.com/docs/cobrança-duplicada-após-retry-sem-idempotência`) recomenda
+   literalmente o fluxo da secao 8 - *"registrar a tentativa -> consultar o resultado -> reutilizar o
+   ID existente ou criar uma unica vez -> armazenar o resultado"* - e avisa que *"Timeout nao
+   significa que a cobranca nao foi criada"* e que *"o `externalReference` pode ajudar a relacionar e
+   localizar a cobranca, mas deve ser utilizado junto ao controle interno de retries e
+   concorrencia"*. Consequencia: `dedupeKey` como `externalReference` + consulta previa **e** o
+   mecanismo, nao uma rede de seguranca opcional - exatamente o que `handlers.ts` faz.
+6. **Retencao da fila** - **resolvido (2026-10-27)**: 90 dias por default
+   (`OUTBOX_RETENTION_DAYS`), `DELETE` em lote de no maximo 1.000 linhas `done`, uma vez por hora,
+   dentro do proprio laco (`purgeDoneOutbox`); particao mensal so se o volume justificar. O indice
+   parcial `outbox_events_done_idx` (`0013_outbox_retention.sql`) cobre a busca. `dead` **nao** e
+   expurgada por idade: e estado de operacao, e o expurgo dela e `POST /ops/outbox/:id/retry` ou uma
+   decisao explicita.
 
 ## 16. Riscos e limites conhecidos
 
@@ -485,24 +510,27 @@ Mapa do que existe (2026-10-27), para o proximo passo nao procurar arquivo por a
 | Camada | Arquivo | Papel |
 |---|---|---|
 | schema | `apps/api/migrations/0012_outbox_events.sql` | `outbox_events` + 4 indices |
+| schema | `apps/api/migrations/0013_outbox_retention.sql` | indice parcial dos `done` para o expurgo |
 | regras | `apps/api/src/domain/outbox.ts` | `dedupeKey`, backoff, `classifyFailure`, `ProviderError` |
-| SQL | `apps/api/src/db/outbox.ts` | enqueue, claim, done/retry/dead, reaper, resumo, retry |
+| SQL | `apps/api/src/db/outbox.ts` | enqueue, claim, done/retry/dead, reaper, expurgo, resumo, retry |
 | provedor | `apps/api/src/integrations/asaas-client.ts` | `AsaasClient` + implementacao `fetch` |
 | handlers | `apps/api/src/outbox/handlers.ts` | topic -> chamada + `asaas_customers`/`asaas_charges` |
-| laco | `apps/api/src/outbox/worker.ts` | `runOutboxCycle`, `startOutboxWorker` |
+| laco | `apps/api/src/outbox/worker.ts` | `runOutboxCycle`, `startOutboxWorker`, expurgo horario |
 | processo | `apps/api/src/server.ts` | start no boot, stop antes de `app.close()` |
 | operacao | `apps/api/src/routes/ops.ts` | `GET /ops/outbox`, `POST /ops/outbox/:id/retry` |
 
-Testes: 26 unitarios em `domain/outbox.test.ts` e 8 de integracao em
+Testes: 26 unitarios em `domain/outbox.test.ts` e 9 de integracao em
 `outbox/outbox.integration.test.ts` (schema descartavel, fake no lugar do provedor).
 
 O que falta, na ordem em que importa:
 
 1. decidir o primeiro produtor (secao 15, item 1) e ligar `enqueueOutbox` em
    `POST /api/v1/installments`;
-2. consumidor de `asaas_events` (secao 9): sem ele o webhook grava e ninguem aplica status;
-3. verificar a documentacao de idempotencia do Asaas para POST de cobranca (secao 15, item 5);
-4. expurgo das linhas `done` (secao 15, item 6).
+2. consumidor de `asaas_events` (secao 9): sem ele o webhook grava e ninguem aplica status.
+
+Resolvidos desde o primeiro mapa: idempotencia do Asaas verificada na documentacao (secao 15, item
+5 - nao existe header; a recomendacao oficial e o fluxo da secao 8) e expurgo das linhas `done`
+implementado (secao 15, item 6).
 
 Nota de infraestrutura: `applyMigrations` (`apps/api/src/db/run-migrations.ts`) passou a segurar um
 `pg_advisory_lock` durante a execucao. Duas execucoes concorrentes - duas instancias subindo juntas,

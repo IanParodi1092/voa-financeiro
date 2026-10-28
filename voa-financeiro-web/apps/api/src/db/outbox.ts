@@ -222,6 +222,43 @@ export async function retryDeadMessage(pool: Pool, id: string): Promise<RetryOut
   return { status: 'not_dead', currentStatus };
 }
 
+export interface PurgeResult {
+  /** Linhas removidas nesta chamada; o `limit` corta o resto para a proxima. */
+  purged: number;
+}
+
+/**
+ * Remove linhas `done` mais antigas que `retentionDays` (secao 15, item 6 do desenho).
+ *
+ * Tres decisoes, todas para nao transformar higiene em incidente:
+ *
+ * 1. **So `done` sai.** `dead` e estado de operacao (o operador precisa ver e reprocessar) e
+ *    `pending`/`processing` sao trabalho. O historico de uma mensagem concluida ja esta em
+ *    `audit_logs` (`outbox.done`), que nao e expurgado por esta funcao.
+ * 2. **`LIMIT` por chamada.** O laco chama uma vez por hora; sem o teto, o primeiro expurgo de uma
+ *    tabela grande trancaria milhares de linhas de uma vez num banco compartilhado com a API.
+ * 3. **`retentionDays <= 0` nao apaga nada.** Desligar a retencao e configuracao valida, e um
+ *    `make_interval` com valor negativo seria um erro silencioso de quem chamou.
+ */
+export async function purgeDoneOutbox(
+  pool: Pool,
+  options: { retentionDays: number; limit?: number }
+): Promise<PurgeResult> {
+  if (options.retentionDays <= 0) return { purged: 0 };
+  const result = await pool.query(
+    `DELETE FROM outbox_events
+      WHERE id IN (
+        SELECT id FROM outbox_events
+         WHERE status = 'done'
+           AND completed_at < now() - make_interval(days => $1)
+         ORDER BY completed_at
+         LIMIT $2
+      )`,
+    [options.retentionDays, options.limit ?? 1_000]
+  );
+  return { purged: result.rowCount ?? 0 };
+}
+
 export interface OutboxSummary {
   counts: Record<OutboxStatus, number>;
   /** Idade do `pending` mais antigo: e o sinal que `counts` sozinho nao da. */

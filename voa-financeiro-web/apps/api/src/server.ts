@@ -30,7 +30,8 @@ const outbox = startOutboxWorker({
     environment: config.ASAAS_ENVIRONMENT,
     pollIntervalMs: config.OUTBOX_POLL_INTERVAL_MS,
     batchSize: config.OUTBOX_BATCH_SIZE,
-    leaseTimeoutMs: config.OUTBOX_LEASE_TIMEOUT_MS
+    leaseTimeoutMs: config.OUTBOX_LEASE_TIMEOUT_MS,
+    retentionDays: config.OUTBOX_RETENTION_DAYS
   }
 });
 

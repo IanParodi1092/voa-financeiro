@@ -34,7 +34,8 @@ const SETTINGS: OutboxSettings = {
   environment: 'sandbox',
   pollIntervalMs: 10,
   batchSize: 5,
-  leaseTimeoutMs: 300_000
+  leaseTimeoutMs: 300_000,
+  retentionDays: 90
 };
 
 /** Fake do provedor: conta chamadas por chave e deixa o teste enfileirar falhas por chave. */
@@ -481,5 +482,50 @@ describeWithDatabase('integracao: outbox + worker em processo', () => {
     );
     expect(audited.rowCount).toBe(1);
     expect(audited.rows[0]?.metadata.previousError).toBe('400: invalid value');
+  });
+
+  /**
+   * A retencao e a unica parte da fila que apaga dado, entao o teste fixa as tres fronteiras:
+   * `done` velha sai, `done` recente fica, e `dead`/`pending` nunca sao tocadas por idade.
+   */
+  it('expurgo remove so `done` antigo e preserva pending e dead', async () => {
+    await drainQueue();
+    const recentId = await enqueueFor(await createFixtures());
+    expect((await cycle()).done).toBe(1);
+
+    const oldId = await enqueueFor(await createFixtures());
+    expect((await cycle()).done).toBe(1);
+
+    // `pending` agendada para depois: o claim nao a pega, e ela prova que o DELETE nao olha para
+    // trabalho que ainda vai acontecer.
+    const pendingId = await enqueueFor(await createFixtures());
+    await pool.query(`UPDATE outbox_events SET available_at = now() + interval '1 hour' WHERE id = $1`, [pendingId]);
+
+    const deadId = await enqueueFor(await createFixtures());
+    await markOutboxDead(pool, deadId, '400: invalid value');
+
+    // Envelhece as duas: a `dead` velha continua porque o expurgo filtra por status.
+    await pool.query(`UPDATE outbox_events SET completed_at = now() - interval '91 days' WHERE id = ANY($1::uuid[])`, [
+      [oldId, deadId]
+    ]);
+
+    // Sem a flag, o ciclo normal nao apaga nada - expurgo nao e efeito colateral do poll.
+    expect((await cycle()).purged).toBe(0);
+
+    const purge = await runOutboxCycle({ pool, logger: app.log, asaas: fake, workerId: 'test:1' }, SETTINGS, {
+      purgeDone: true
+    });
+    expect(purge.purged).toBe(1);
+
+    const survivors = await pool.query<{ id: string }>('SELECT id FROM outbox_events WHERE id = ANY($1::uuid[])', [
+      [recentId, oldId, pendingId, deadId]
+    ]);
+    expect(survivors.rows.map((row) => row.id).sort()).toEqual([recentId, pendingId, deadId].sort());
+
+    // Sem candidato novo a segunda passada nao apaga nada e o ciclo segue o roteiro normal.
+    const again = await runOutboxCycle({ pool, logger: app.log, asaas: fake, workerId: 'test:1' }, SETTINGS, {
+      purgeDone: true
+    });
+    expect(again).toMatchObject({ purged: 0, claimed: 0 });
   });
 });
